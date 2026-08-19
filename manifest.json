@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "SMART SEROK",
+  "version": "9.1.3",
+  "description": "SMART SEROK v9.1.3 — BATTLE setelah setup, wajib fresh_wallet tinggi, dengan range low–high market cap.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

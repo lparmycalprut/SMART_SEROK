@@ -1,0 +1,83 @@
+SMART SEROK v9.1.3
+==================
+Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
+Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
+script versi lama yang masih menempel di halaman benar-benar diganti.
+
+Sinyal setup (logika lama tidak diubah)
+---------------------------------------
+WASPADA DUMP (merah)
+  harga naik + cumCVD naik + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
+
+SIAP2 PUMP (hijau)
+  harga turun + cumCVD turun + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
+
+BATTLE TERJADI (kuning)
+-----------------------
+BATTLE hanya boleh muncul jika pada salah satu bar yang lebih awal di klaster aktif sudah muncul:
+  - WASPADA DUMP, atau
+  - SIAP2 PUMP.
+
+Badge header menampilkan total wallet bertag fresh yang berhasil ditangkap, sehingga
+bisa langsung dicek apakah respons GMGN benar-benar mengirim tag fresh_wallet.
+
+Semua syarat berikut wajib terpenuhi:
+  1. gap = |BUY − SELL| / (BUY + SELL) ≤ 2,5%
+  2. TX ≥ persentil 65 periode/klaster aktif
+  3. wallet unik ≥ persentil 65 periode/klaster aktif
+  4. jumlah wallet unik bertag fresh_wallet ≥ persentil 65 periode/klaster aktif
+
+Minimum 8 bar selesai untuk menghitung ambang aktivitas. Bar yang masih berjalan
+tidak memunculkan BATTLE agar sinyal tidak berubah intrabar. Tag fresh_wallet wajib
+tersedia; tanpa tag fresh_wallet, BATTLE tidak akan muncul.
+
+Penangkapan tag fresh_wallet
+----------------------------
+Ekstensi menangkap tag dari field GMGN berikut, termasuk bentuk nested:
+  maker_tags, maker_token_tags, maker_event_tags, tags, tag,
+  maker_info.*, dan wallet_info.*
+
+Nama tag produksi yang dikenali:
+  fresh_wallet (exact setelah normalisasi huruf/spasi/tanda hubung).
+Field is_new=true pada holder hanya dipakai sebagai fallback/enrichment; tag
+fresh_wallet dari payload GMGN tetap menjadi sumber utama.
+
+Agregasi per candle:
+  fresh_wallets, fresh_wallet_pct, fresh_tx, fresh_buy_sol, fresh_sell_sol,
+  dan tagged_makers.
+
+Range BATTLE menggunakan market cap
+-----------------------------------
+Detail BATTLE menampilkan:
+  RANGE BATTLE MC: LOW market cap — HIGH market cap
+
+Ekstensi otomatis meminta endpoint token_holders saat halaman token dibuka, saat
+Background Fetch/LIVE dimulai, dan tetap menangkap respons holder/top-holder/token-trader
+berdasarkan bentuk payload meskipun nama URL berubah. Dari beberapa
+holder valid, ekstensi mengambil median kandidat berikut agar satu record tidak
+mendistorsi hasil:
+  market cap = usd_value / amount_percentage
+  supply     = amount_cur / amount_percentage
+  price      = usd_value / amount_cur
+Tag holder disimpan per address dan memperkaya trade yang maker_tags-nya kosong.
+Registry tag dan konteks market cap direset saat pindah token atau Reset manual.
+Badge header menampilkan MC dan sumbernya (holder/token_info) agar keberhasilan
+penangkapan konteks market cap dapat diperiksa langsung.
+
+Konversi market cap historis memprioritaskan effective supply hasil holder,
+kemudian rasio market_cap/price dari token_info, total_supply, atau inferensi
+market cap terkini terhadap close terbaru. Jika data belum tertangkap, detail menampilkan
+"MC belum tersedia" dan tidak kembali menggunakan range price.
+
+Export
+------
+- BARS menambahkan open/high/low/close market cap dan metrik fresh wallet.
+- RAW TRADES menambahkan kolom tags.
+- Export AI menambahkan market cap dan metrik fresh wallet.
+
+Catatan
+-------
+- AKTIVASI PUMP dan AKTIVASI DUMP tetap dihapus.
+- Tidak ada konfirmasi fakeout/higher-high otomatis.
+- Wash tidak menjadi syarat sinyal; nilainya tetap ditampilkan.
+- Jam menggunakan WIB (Asia/Jakarta, UTC+7).
