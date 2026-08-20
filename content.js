@@ -63,6 +63,21 @@
   const BATTLE_MAX_GAP_PCT = 2.5;       // |buy-sell| / (buy+sell) — hampir seimbang
   // Per candle aktif: pada TF 1H, ini adalah total BUY+SELL dalam jam BATTLE.
   const BATTLE_MIN_VOL_SOL = 200;
+  // ── R MONITOR ─────────────────────────────────────────────────────────────
+  // Mode baca R murni: tanpa sinyal, tanpa chart harga/CVD. Tujuannya hanya
+  // menjawab dua hal secara manual:
+  //   1. Saat harga bergerak — apakah ada perlawanan? (R kecil = tembus bersih)
+  //   2. Saat harga di support/resistance — apakah pihak lawan masuk? (R melonjak)
+  const R_MON_BARS = 40;                // candle terakhir yang ditampilkan
+  // |R| dinormalisasi ke median |R| klaster aktif, karena skala R berbeda tiap
+  // token/likuiditas. Angka mentah tidak bisa dibandingkan lintas token.
+  const R_BAND_FREE = 0.5;              // < 0,5× acuan → BEBAS (tanpa perlawanan)
+  const R_BAND_ABSORB = 1.5;            // ≥ 1,5× acuan → SERAP (perlawanan muncul)
+  const R_BAND_WALL = 4;                // ≥ 4×   acuan → TEMBOK (perlawanan kuat)
+  const R_MON_MIN_EFFORT = 1;           // SOL — di bawah ini R tidak bermakna (bar sepi)
+  const R_MON_MOVE_PCT = 3;             // |chg| ≥ ini dianggap "harga benar-benar bergerak"
+  let rMonitorMode = true;              // default: tampilkan R MONITOR
+
   const BATTLE_ACTIVITY_PCTL = 0.65;    // TX, wallet unik, dan fresh_wallet minimal P65
   const BATTLE_MIN_BARS = 8;            // minimum bar selesai agar ambang aktivitas cukup stabil
   const SETUP_WASH_MAX = 30;            // % — tidak dipakai sinyal
@@ -1215,6 +1230,215 @@
     return lines.join("\n");
   }
 
+  // 3b. R MONITOR — pembacaan R murni, tanpa sinyal & tanpa chart harga/CVD
+  // ══════════════════════════════════════════════════════════════════════════
+  // Filosofi: R = effort / result. Ekstensi TIDAK menyimpulkan arah dan TIDAK
+  // memberi sinyal. Ia hanya melaporkan "seberapa keras harga dilawan di candle
+  // ini", lalu user yang menyimpulkan sendiri.
+
+  // Acuan skala: median |R| dari bar selesai di klaster aktif. Median dipakai
+  // supaya satu candle ekstrem tidak menggeser seluruh acuan.
+  function rBaseline(bars) {
+    const vals = (bars || [])
+      .filter(b => !b.partial && b.R != null && Math.abs(effortOf(b)) >= R_MON_MIN_EFFORT)
+      .map(b => Math.abs(b.R));
+    if (vals.length < 4) return null;
+    return percentile(vals, 0.5);
+  }
+  function effortOf(b) {
+    return b.cvdClean != null ? b.cvdClean : (b.cvd || 0);
+  }
+
+  // Klasifikasi satu bar menjadi kondisi R yang bisa dibaca langsung.
+  function readR(b, base) {
+    const chg = b.priceChgPct;
+    const effort = effortOf(b);
+    const absEffort = Math.abs(effort);
+    const absR = b.R != null ? Math.abs(b.R) : null;
+
+    if (absR == null || chg == null) {
+      return { code: "NA", label: "—", desc: "harga tidak tersedia", color: "#475569", ratio: null };
+    }
+    // Bar sepi: R tinggi di sini hanyalah artefak pembagian, bukan perlawanan.
+    if (absEffort < R_MON_MIN_EFFORT) {
+      return { code: "SEPI", label: "SEPI", desc: `effort ${absEffort.toFixed(1)} SOL — R tidak bermakna`,
+               color: "#475569", ratio: null };
+    }
+    const ratio = base && base > 1e-9 ? absR / base : null;
+    const up = chg > 0;
+    const arah = up ? "naik" : chg < 0 ? "turun" : "datar";
+    // Tanda R menyatakan sisi mana yang sedang diserap.
+    const sisi = effort >= 0 ? "BUY diserap seller" : "SELL diserap buyer";
+
+    if (ratio == null) {
+      return { code: "RAW", label: absR.toFixed(1), desc: "acuan belum cukup (≥4 bar)",
+               color: "#94a3b8", ratio: null };
+    }
+    if (ratio >= R_BAND_WALL) {
+      return { code: "TEMBOK", label: "TEMBOK", ratio,
+               desc: `perlawanan kuat saat harga ${arah} · ${sisi}`, color: "#ef4444" };
+    }
+    if (ratio >= R_BAND_ABSORB) {
+      return { code: "SERAP", label: "SERAP", ratio,
+               desc: `ada perlawanan saat harga ${arah} · ${sisi}`, color: "#fbbf24" };
+    }
+    if (ratio < R_BAND_FREE) {
+      const clear = Math.abs(chg) >= R_MON_MOVE_PCT;
+      return { code: clear ? "BEBAS" : "TIPIS", label: clear ? "BEBAS" : "tipis", ratio,
+               desc: clear
+                 ? `harga ${arah} ${Math.abs(chg).toFixed(1)}% nyaris tanpa perlawanan`
+                 : `R rendah tapi harga hampir diam (${chg.toFixed(2)}%)`,
+               color: clear ? "#22c55e" : "#64748b" };
+    }
+    return { code: "NORMAL", label: "normal", ratio,
+             desc: `perlawanan wajar · ${sisi}`, color: "#94a3b8" };
+  }
+
+  // Ringkasan bar terakhir yang sudah selesai — kesimpulan tetap di tangan user.
+  function rMonitorSummary(bars) {
+    const base = rBaseline(bars);
+    const done = (bars || []).filter(b => !b.partial);
+    const last = done.length ? done[done.length - 1] : null;
+    if (!last) return { base, last: null, read: null, text: "Belum ada candle selesai." };
+    const read = readR(last, base);
+    const chg = last.priceChgPct;
+    let text;
+    switch (read.code) {
+      case "BEBAS":
+        text = `Candle ${fmtBar(last)}: harga ${chg > 0 ? "naik" : "turun"} ${Math.abs(chg).toFixed(1)}% dengan perlawanan minim. Gerakan bersih.`;
+        break;
+      case "TEMBOK":
+        text = `Candle ${fmtBar(last)}: perlawanan KUAT (${read.ratio.toFixed(1)}× normal). Pihak lawan aktif menahan di area ini.`;
+        break;
+      case "SERAP":
+        text = `Candle ${fmtBar(last)}: perlawanan mulai muncul (${read.ratio.toFixed(1)}× normal).`;
+        break;
+      case "SEPI":
+        text = `Candle ${fmtBar(last)}: terlalu sepi (${Math.abs(effortOf(last)).toFixed(1)} SOL) — R belum bisa dibaca.`;
+        break;
+      default:
+        text = `Candle ${fmtBar(last)}: perlawanan pada level wajar.`;
+    }
+    return { base, last, read, text };
+  }
+
+  function renderRMonitor(bars, container) {
+    const data = (bars || []).slice(-R_MON_BARS);
+    if (data.length < 2) {
+      container.innerHTML = `<div class="gmgn-rm-empty">Butuh ≥2 candle. Jalankan Background Fetch.</div>`;
+      return;
+    }
+    const base = rBaseline(bars);
+    const sum = rMonitorSummary(bars);
+
+    // ---- panel ringkas: kondisi candle terakhir ----
+    let head = `<div class="gmgn-rm-head">`;
+    if (sum.read) {
+      head += `<span class="gmgn-rm-tag" style="background:${sum.read.color}22;color:${sum.read.color};border-color:${sum.read.color}66;">${esc(sum.read.label)}</span>`;
+    }
+    head += `<span class="gmgn-rm-sum">${esc(sum.text)}</span>`;
+    head += `<span class="gmgn-rm-base">acuan |R| ${base != null ? base.toFixed(1) : "—"}</span>`;
+    head += `</div>`;
+
+    // ---- grafik batang R ternormalisasi ----
+    // Batang ke ATAS  = +R (BUY diserap seller — tekanan jual pasif di atas)
+    // Batang ke BAWAH = −R (SELL diserap buyer — tekanan beli pasif di bawah)
+    const W = 1000, padL = 46, padR = 74, padT = 16, padB = 34;
+    const H = 300, ih = H - padT - padB, iw = W - padL - padR;
+    const n = data.length;
+    const slot = iw / n;
+    const bw = Math.max(3, Math.min(20, slot * 0.62));
+    const ratios = data.map(b => {
+      const r = readR(b, base);
+      return r.ratio != null ? Math.min(r.ratio, R_BAND_WALL * 2.5) : 0;
+    });
+    const peak = Math.max(R_BAND_WALL * 1.2, ...ratios);
+    const y0 = padT + ih / 2;
+    const yv = v => y0 - (Math.max(-peak, Math.min(peak, v)) / peak) * (ih / 2);
+
+    let s = "";
+    // pita zona
+    const band = (lo, hi, col, op) => {
+      const yA = yv(hi), yB = yv(lo);
+      s += `<rect x="${padL}" y="${yA}" width="${iw}" height="${Math.abs(yB - yA)}" fill="${col}" opacity="${op}"/>`;
+      const yA2 = yv(-lo), yB2 = yv(-hi);
+      s += `<rect x="${padL}" y="${yA2}" width="${iw}" height="${Math.abs(yB2 - yA2)}" fill="${col}" opacity="${op}"/>`;
+    };
+    band(0, R_BAND_FREE, "#22c55e", 0.07);
+    band(R_BAND_ABSORB, R_BAND_WALL, "#fbbf24", 0.07);
+    band(R_BAND_WALL, peak, "#ef4444", 0.09);
+
+    // garis ambang
+    [R_BAND_FREE, R_BAND_ABSORB, R_BAND_WALL].forEach(t => {
+      [t, -t].forEach(v => {
+        s += `<line x1="${padL}" y1="${yv(v)}" x2="${W - padR}" y2="${yv(v)}" stroke="#334155" stroke-width="1" stroke-dasharray="3 4"/>`;
+      });
+    });
+    s += `<line x1="${padL}" y1="${y0}" x2="${W - padR}" y2="${y0}" stroke="#64748b" stroke-width="1.2"/>`;
+
+    // label sumbu kanan
+    const axis = [
+      [R_BAND_WALL, "TEMBOK", "#ef4444"],
+      [R_BAND_ABSORB, "SERAP", "#fbbf24"],
+      [R_BAND_FREE, "BEBAS", "#22c55e"]
+    ];
+    axis.forEach(([v, t, c]) => {
+      s += `<text x="${W - padR + 7}" y="${yv(v) + 3}" fill="${c}" font-size="10" font-weight="700">${t} ${v}×</text>`;
+      s += `<text x="${W - padR + 7}" y="${yv(-v) + 3}" fill="${c}" font-size="10" font-weight="700">${t} ${v}×</text>`;
+    });
+    s += `<text x="${padL - 6}" y="${padT + 10}" fill="#f87171" font-size="10" text-anchor="end">+R</text>`;
+    s += `<text x="${padL - 6}" y="${padT + 22}" fill="#64748b" font-size="8" text-anchor="end">serap BUY</text>`;
+    s += `<text x="${padL - 6}" y="${padT + ih - 12}" fill="#4ade80" font-size="10" text-anchor="end">−R</text>`;
+    s += `<text x="${padL - 6}" y="${padT + ih}" fill="#64748b" font-size="8" text-anchor="end">serap SELL</text>`;
+
+    data.forEach((b, i) => {
+      const r = readR(b, base);
+      const cx = padL + slot * i + slot / 2;
+      if (r.ratio == null) {
+        s += `<circle cx="${cx.toFixed(1)}" cy="${y0}" r="2" fill="#334155"><title>${fmtBar(b)} | ${esc(r.desc)}</title></circle>`;
+        return;
+      }
+      const signed = effortOf(b) >= 0 ? r.ratio : -r.ratio;
+      const capped = Math.max(-peak, Math.min(peak, signed));
+      const yTop = Math.min(y0, yv(capped)), hgt = Math.max(1.5, Math.abs(yv(capped) - y0));
+      const chg = b.priceChgPct;
+      const tip = `${fmtBar(b)} | ${r.code} ${r.ratio.toFixed(2)}× acuan | R=${b.signedR >= 0 ? "+" : ""}${(b.signedR || 0).toFixed(2)}`
+        + ` | harga ${chg >= 0 ? "+" : ""}${(chg || 0).toFixed(2)}% | effort ${effortOf(b).toFixed(1)} SOL | ${r.desc}`;
+      s += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${hgt.toFixed(1)}"`
+        + ` rx="1.5" fill="${r.color}" opacity="${b.partial ? 0.42 : 0.92}"><title>${esc(tip)}</title></rect>`;
+      // penanda candle yang harganya benar-benar bergerak
+      if (Math.abs(chg || 0) >= R_MON_MOVE_PCT) {
+        const my = chg > 0 ? padT + 8 : padT + ih + 10;
+        s += `<text x="${cx.toFixed(1)}" y="${my}" fill="${chg > 0 ? "#22c55e" : "#ef4444"}" font-size="8" text-anchor="middle">${chg > 0 ? "▲" : "▼"}</text>`;
+      }
+    });
+
+    s += `<text x="${padL}" y="${H - 16}" fill="#64748b" font-size="9">${esc(fmtBar(data[0]))}</text>`;
+    s += `<text x="${W - padR}" y="${H - 16}" fill="#64748b" font-size="9" text-anchor="end">${esc(fmtBar(data[data.length - 1]))}</text>`;
+    s += `<text x="${padL}" y="${H - 4}" fill="#475569" font-size="8">tinggi batang = |R| relatif terhadap median klaster · ▲▼ = harga bergerak ≥${R_MON_MOVE_PCT}% · batang pudar = candle berjalan</text>`;
+
+    // ---- tabel candle terakhir ----
+    const rows = data.slice(-12).reverse().map(b => {
+      const r = readR(b, base);
+      const chg = b.priceChgPct;
+      return `<tr>
+        <td class="t">${esc(fmtBar(b))}${b.partial ? ' <span class="run">berjalan</span>' : ""}</td>
+        <td class="n" style="color:${(chg || 0) > 0 ? "#22c55e" : (chg || 0) < 0 ? "#ef4444" : "#94a3b8"};">${chg == null ? "—" : (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%"}</td>
+        <td class="n">${b.signedR == null ? "—" : (b.signedR >= 0 ? "+" : "") + b.signedR.toFixed(1)}</td>
+        <td class="n">${r.ratio == null ? "—" : r.ratio.toFixed(2) + "×"}</td>
+        <td><span class="pill" style="background:${r.color}22;color:${r.color};">${esc(r.label)}</span></td>
+        <td class="d">${esc(r.desc)}</td>
+      </tr>`;
+    }).join("");
+
+    container.innerHTML = head
+      + `<svg width="100%" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;">${s}</svg>`
+      + `<table class="gmgn-rm-tbl"><thead><tr>
+           <th>candle</th><th>harga</th><th>R</th><th>rasio</th><th>kondisi</th><th>bacaan</th>
+         </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 4. CHART LINTASAN (cumCVD ━ vs harga ┄, point warna = R-regime)
   // ══════════════════════════════════════════════════════════════════════════
   function renderTrajectory(bars, container) {
@@ -1337,10 +1561,13 @@
       "#",
       "# timezone=WIB (Asia/Jakarta, UTC+7) — sama dengan GMGN",
       "# === BARS (chart: bar_start_wib vs close & R) ===",
-      "bar_start_wib,cluster,close,price_chg_pct,R,cvd,cvd_clean,cum_cvd,open,high,low,open_mc_usd,high_mc_usd,low_mc_usd,close_mc_usd,buy_sol,sell_sol,vol_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,top_wallet_pct,partial"
+      "bar_start_wib,cluster,close,price_chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,open,high,low,open_mc_usd,high_mc_usd,low_mc_usd,close_mc_usd,buy_sol,sell_sol,vol_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,top_wallet_pct,partial"
     ];
+    const rBase = rBaseline(bars);
     const barRows = bars.map(b => [wibIso(b.start), b.cluster, b.close ?? "",
       b.priceChgPct != null ? b.priceChgPct.toFixed(3) : "", b.R != null ? b.R.toFixed(3) : "",
+      (() => { const r = readR(b, rBase); return r.ratio != null ? r.ratio.toFixed(3) : ""; })(),
+      readR(b, rBase).code,
       b.cvd.toFixed(3), b.cvdClean.toFixed(3), b.cumCVD.toFixed(3), b.open ?? "", b.high ?? "", b.low ?? "",
       b.openMc != null ? b.openMc.toFixed(2) : "", b.highMc != null ? b.highMc.toFixed(2) : "",
       b.lowMc != null ? b.lowMc.toFixed(2) : "", b.closeMc != null ? b.closeMc.toFixed(2) : "",
@@ -1487,11 +1714,35 @@
       }
     }
 
+    // R MONITOR menggantikan chart harga/CVD + riwayat sinyal saat aktif.
+    const rmEl = document.getElementById("gmgn-rmonitor");
     const chartEl = document.getElementById("gmgn-chart");
-    if (chartEl) renderTrajectory(bars, chartEl);
+    if (rmEl) {
+      rmEl.style.display = rMonitorMode ? "" : "none";
+      if (rMonitorMode) renderRMonitor(bars, rmEl);
+    }
+    if (chartEl) {
+      chartEl.style.display = rMonitorMode ? "none" : "";
+      if (!rMonitorMode) renderTrajectory(bars, chartEl);
+    }
+    if (shEl) shEl.style.display = rMonitorMode ? "none" : "";
+    const noteEl = document.getElementById("gmgn-note-sinyal");
+    if (noteEl) noteEl.style.display = rMonitorMode ? "none" : "";
+    const noteRm = document.getElementById("gmgn-note-rmon");
+    if (noteRm) noteRm.style.display = rMonitorMode ? "" : "none";
 
     const dlBtn = document.getElementById("gmgn-btn-dl"); if (dlBtn) dlBtn.disabled = bars.length < 2;
     const aiBtn = document.getElementById("gmgn-btn-ai"); if (aiBtn) aiBtn.disabled = bars.length < 2;
+  }
+
+  function paintModeBtn() {
+    const btn = document.getElementById("gmgn-btn-mode");
+    if (!btn) return;
+    btn.textContent = rMonitorMode ? "📊 R MONITOR" : "🔔 MODE SINYAL";
+    btn.classList.toggle("is-sig", !rMonitorMode);
+    btn.title = rMonitorMode
+      ? "Sedang menampilkan R murni. Klik untuk kembali ke mode sinyal."
+      : "Sedang menampilkan sinyal. Klik untuk membaca R murni.";
   }
 
   function injectUI() {
@@ -1545,6 +1796,22 @@
       #gmgn-effort-widget #gmgn-sig-tip.is-on { display: block; }
       #gmgn-effort-widget #gmgn-chart { display: block; }
       #gmgn-effort-widget #gmgn-chart svg { display: block; width: 100%; height: auto; }
+      #gmgn-effort-widget #gmgn-rmonitor svg { display: block; width: 100%; height: auto; }
+      #gmgn-effort-widget .gmgn-rm-empty { padding: 18px 10px; color: #64748b; font-size: 13px; }
+      #gmgn-effort-widget .gmgn-rm-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 10px; margin-bottom: 6px; background: #0f172a; border: 1px solid #1e293b; border-radius: 9px; }
+      #gmgn-effort-widget .gmgn-rm-tag { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 6px; border: 1px solid; white-space: nowrap; letter-spacing: .02em; }
+      #gmgn-effort-widget .gmgn-rm-sum { font-size: 13px; color: #cbd5e1; flex: 1 1 260px; line-height: 1.45; }
+      #gmgn-effort-widget .gmgn-rm-base { font-size: 11px; color: #64748b; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #gmgn-effort-widget .gmgn-rm-tbl { width: 100%; border-collapse: collapse; margin-top: 7px; font-size: 12px; font-variant-numeric: tabular-nums; }
+      #gmgn-effort-widget .gmgn-rm-tbl th { text-align: left; color: #64748b; font-weight: 700; font-size: 11px; padding: 5px 7px; border-bottom: 1px solid #1e293b; }
+      #gmgn-effort-widget .gmgn-rm-tbl td { padding: 5px 7px; border-bottom: 1px solid #131f36; color: #cbd5e1; }
+      #gmgn-effort-widget .gmgn-rm-tbl td.n { text-align: right; white-space: nowrap; }
+      #gmgn-effort-widget .gmgn-rm-tbl td.t { white-space: nowrap; color: #94a3b8; }
+      #gmgn-effort-widget .gmgn-rm-tbl td.d { color: #94a3b8; font-size: 11.5px; }
+      #gmgn-effort-widget .gmgn-rm-tbl .run { color: #38bdf8; font-size: 10px; }
+      #gmgn-effort-widget .gmgn-rm-tbl .pill { font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+      #gmgn-effort-widget .gmgn-btn-mode { background: #1d4ed8; color: #dbeafe; }
+      #gmgn-effort-widget .gmgn-btn-mode.is-sig { background: #334155; color: #e2e8f0; }
       #gmgn-effort-widget #gmgn-status-text { display: block; min-height: 1.2em; }
       #gmgn-effort-widget #gmgn-btn-min { flex-shrink: 0; padding: 4px 10px; font-size: 14px; }
       #gmgn-effort-widget #gmgn-done-flag { font-size: 13px; font-weight: 700; color: #10b981; white-space: nowrap; }
@@ -1566,6 +1833,7 @@
             <button class="gmgn-btn-main gmgn-btn-start" id="gmgn-btn-scroll"><span>⚡ Auto-Scroll</span></button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-dl" disabled>⬇ Export</button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-ai" disabled title="Export ringkas (bars+sinyal) untuk analisa AI, tanpa raw trades">⤓ for AI</button>
+            <button class="gmgn-btn-main gmgn-btn-mode" id="gmgn-btn-mode" title="Ganti antara R MONITOR (baca R murni) dan mode sinyal">📊 R MONITOR</button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-reset">🧹 Reset</button>
           </div>
           <div class="gmgn-row">
@@ -1578,10 +1846,18 @@
         </div>
         <div id="gmgn-phase"></div>
         <div id="gmgn-narrative" class="gmgn-nar"></div>
+        <div id="gmgn-rmonitor"></div>
         <div id="gmgn-chart"></div>
         <div id="gmgn-sighist"></div>
         <div id="gmgn-sig-tip"></div>
-        <div class="gmgn-note">
+        <div class="gmgn-note" id="gmgn-note-rmon">
+          📊 R MONITOR — hanya membaca R, tanpa sinyal dan tanpa kesimpulan otomatis. R = effort (CVD bersih) ÷ result (% harga), dinormalisasi ke median |R| klaster aktif agar bisa dibandingkan antar token.
+          🟢 BEBAS (&lt;0,5×) = harga bergerak nyaris tanpa perlawanan → breakout bersih.
+          🟡 SERAP (≥1,5×) = perlawanan mulai muncul.
+          🔴 TEMBOK (≥4×) = perlawanan kuat, pihak lawan aktif menahan.
+          Batang ke ATAS = +R (BUY diserap seller). Batang ke BAWAH = −R (SELL diserap buyer). Bar dengan effort &lt;1 SOL ditandai SEPI karena R-nya artefak pembagian. Konfirmasi dilakukan manual.
+        </div>
+        <div class="gmgn-note" id="gmgn-note-sinyal">
           🟢 SERAP SELL — POTENSI PUMP: R negatif spike + CVD bersih ≤−3 SOL saat harga tertahan/naik ≤3%. ⚔️ BATTLE TERJADI (Bisa LP) mandiri: tidak perlu sinyal sebelumnya. Syarat BATTLE: volume total candle ≥200 SOL, gap BUY–SELL ≤2,5%, serta TX, wallet unik, dan tag fresh_wallet ≥P65 periode aktif. Range battle memakai LOW–HIGH MARKET CAP. Tanpa aktivasi/konfirmasi otomatis.
         </div>
       </div>
@@ -1589,6 +1865,14 @@
     document.body.appendChild(host);
     document.getElementById("gmgn-btn-bgfetch").addEventListener("click", () => { bgFetchComplete = false; bgFetchActive ? stopBackgroundFetch() : backgroundFetch(); });
     document.getElementById("gmgn-btn-live").addEventListener("click", toggleLive);
+    document.getElementById("gmgn-btn-mode").addEventListener("click", () => {
+      rMonitorMode = !rMonitorMode;
+      paintModeBtn();
+      const sh = document.getElementById("gmgn-sighist");
+      if (sh) sh._sig = "";   // paksa riwayat sinyal render ulang saat kembali
+      updateUI();
+    });
+    paintModeBtn();
     document.getElementById("gmgn-btn-scroll").addEventListener("click", () => { isAutoScrolling ? stopAutoScroll(false) : startAutoScroll(); });
     document.getElementById("gmgn-btn-reset").addEventListener("click", () => { capturedTrades.clear(); walletTagRegistry.clear(); detectedFromTs = null; detectedToTs = null; selectedCluster = null; cachedMcUsd = 0; cachedSupply = 0; cachedPriceUsd = 0; cachedMcPerPrice = 0; cachedHolderSupply = 0; mcContextSource = "none"; holderFetchMint = null; holderFetchLastAt = 0; Object.assign(captureStats, { requests: 0, seen: 0, recorded: 0, dup: 0, outOfRange: 0, noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "Direset manual", lastTs: Date.now() }); updateUI(); });
     document.getElementById("gmgn-cluster").addEventListener("change", (e) => { selectedCluster = e.target.value === "" ? null : parseInt(e.target.value); updateUI(); });
