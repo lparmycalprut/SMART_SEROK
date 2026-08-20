@@ -1,22 +1,33 @@
-SMART SEROK v9.1.3
+SMART SEROK v9.1.4
 ==================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
 
-Sinyal setup (logika lama tidak diubah)
----------------------------------------
-WASPADA DUMP (merah)
+Sinyal setup & konteks
+-----------------------
+WASPADA DUMP (merah — logika lama tidak diubah)
   harga naik + cumCVD naik + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
 
-SIAP2 PUMP (hijau)
+SIAP2 PUMP (hijau — logika lama tidak diubah)
   harga turun + cumCVD turun + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
+
+SERAP SELL — POTENSI PUMP (hijau — sinyal konteks baru)
+  |R| ≥ 10× bar sebelumnya + |R| ≥ 10 + R bertanda negatif + cumCVD turun
+  + CVD bersih ≤ −8 SOL + harga tertahan / naik tipis (0% s/d +3%).
+
+Ini menangkap kondisi seller agresif, tetapi harga tidak berhasil turun karena
+buy-side menyerap jualan. Sinyal ini terpisah dari SIAP2 PUMP; jadi definisi
+SIAP2 PUMP lama tidak berubah. Batas CVD bersih mencegah R besar palsu yang
+hanya terjadi karena perubahan harga nyaris nol dengan effort kecil.
 
 BATTLE TERJADI (kuning)
 -----------------------
 BATTLE hanya boleh muncul jika pada salah satu bar yang lebih awal di klaster aktif sudah muncul:
   - WASPADA DUMP, atau
   - SIAP2 PUMP.
+
+SERAP SELL — POTENSI PUMP tidak menjadi pemicu BATTLE.
 
 Badge header menampilkan total wallet bertag fresh yang berhasil ditangkap, sehingga
 bisa langsung dicek apakah respons GMGN benar-benar mengirim tag fresh_wallet.
@@ -73,7 +84,8 @@ Export
 ------
 - BARS menambahkan open/high/low/close market cap dan metrik fresh wallet.
 - RAW TRADES menambahkan kolom tags.
-- Export AI menambahkan market cap dan metrik fresh wallet.
+- Export AI menambahkan market cap dan metrik fresh wallet; current_signal dan
+  signal_history juga memuat SERAP SELL — POTENSI PUMP bila lolos.
 
 Catatan
 -------

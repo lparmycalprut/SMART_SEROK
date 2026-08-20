@@ -1,9 +1,10 @@
 /**
- * SMART SEROK — v9.1.3
+ * SMART SEROK — v9.1.4
  * --------------------------------------------------------------
  * Sinyal:
  *   🔴 WASPADA DUMP / 🟢 SIAP2 PUMP — |R|≥10× prev + |R|≥10 + harga/cumCVD searah
- *   ⚔️ BATTLE TERJADI — hanya setelah setup di atas; buy/sell hampir seimbang
+ *   🟢 SERAP SELL — POTENSI PUMP — spike R negatif, jual bersih besar, harga tertahan/naik tipis
+ *   ⚔️ BATTLE TERJADI — hanya setelah setup lama di atas; buy/sell hampir seimbang
  *                       (gap ≤2,5%) + TX, wallet unik, dan wallet bertag
  *                       fresh_wallet minimal P65 periode aktif.
  *                       Range battle = low–high MARKET CAP candle battle.
@@ -51,6 +52,10 @@
   const R_SPIKE_MULT = 10;              // |R| vs bar sebelumnya
   const R_MIN_ABS = 10;                 // lantai |R| — buang spike 0.01→1
   const MIN_SPIKE_CVD = 8;              // SOL — buang R tinggi karena Δharga ~0 + effort kecil
+  // SELL besar yang tidak lagi bisa menurunkan harga = buyer menyerap jualan.
+  // Batasi kenaikan supaya candle breakout besar tidak salah dibaca sebagai "tertahan".
+  const SELL_ABSORB_MAX_UP_PCT = 3;
+  const SELL_ABSORPTION_SIGNAL = "SERAP SELL — POTENSI PUMP";
   const BATTLE_MAX_GAP_PCT = 2.5;       // |buy-sell| / (buy+sell) — hampir seimbang
   const BATTLE_ACTIVITY_PCTL = 0.65;    // TX, wallet unik, dan fresh_wallet minimal P65
   const BATTLE_MIN_BARS = 8;            // minimum bar selesai agar ambang aktivitas cukup stabil
@@ -1016,6 +1021,19 @@
     if (a == null || b == null || !(a > 1e-9)) return null;
     return b / a;
   }
+  function isBullishSignal(kind) {
+    return kind === "SIAP2 PUMP" || kind === SELL_ABSORPTION_SIGNAL;
+  }
+  function isBattleTriggerSignal(kind) {
+    // SERAP SELL adalah konteks potensi pump, bukan setup BATTLE baru.
+    return kind === "WASPADA DUMP" || kind === "SIAP2 PUMP";
+  }
+  function isSellAbsorptionPump(b) {
+    if (!b || b.signedR == null || b.priceChgPct == null) return false;
+    const cleanCvd = b.cvdClean != null ? b.cvdClean : (b.cvd || 0);
+    return b.signedR < 0 && cleanCvd <= -MIN_SPIKE_CVD &&
+      b.priceChgPct >= 0 && b.priceChgPct <= SELL_ABSORB_MAX_UP_PCT;
+  }
   function serapTag(b) {
     if (!b || b.signedR == null) return null;
     const chg = Math.abs(b.priceChgPct || 0);
@@ -1029,14 +1047,14 @@
   }
 
   function makeEvent(kind, b, i, prev, rMult, bars) {
-    const g = gradeFromScore(Math.max(20, Math.min(99, Math.round(36 + Math.min(50, rMult)))));
+    const bullish = isBullishSignal(kind);
     return {
       signal: kind,
-      side: kind === "SIAP2 PUMP" ? "bottom" : "top",
+      side: bullish ? "bottom" : "top",
       conf: Math.min(99, Math.round(rMult)),
       grade: "×" + (rMult >= 100 ? rMult.toFixed(0) : rMult.toFixed(1)),
       gradeLabel: rMult.toFixed(1) + "× R bar sebelumnya",
-      gradeColor: kind === "SIAP2 PUMP" ? "#22c55e" : "#ef4444",
+      gradeColor: bullish ? "#22c55e" : "#ef4444",
       gradeParts: [],
       setup: b, confirm: b, setupIdx: i, confirmIdx: i, spike: true,
       ev: {
@@ -1101,13 +1119,14 @@
   function scanSignals(bars) {
     const evs = [];
     const thresholds = battleThresholds(bars);
-    let latestSetup = null;
+    let latestBattleTrigger = null;
     if (!bars || !bars.length) return { events: evs, pending: null, battleThresholds: thresholds };
     for (let i = 0; i < bars.length; i++) {
       const b = bars[i], prev = i > 0 ? bars[i - 1] : null;
-      const priorSetup = latestSetup;
+      const priorBattleTrigger = latestBattleTrigger;
 
-      // Logika setup lama tetap sama: spike R + arah harga/cumCVD.
+      // Setup lama tetap sama. SERAP SELL ditambahkan sebagai sinyal terpisah:
+      // CVD SELL kuat diserap saat harga setidaknya tertahan, bukan SIAP2 PUMP.
       if (prev && b.priceChgPct != null && b.cumCVD != null && prev.cumCVD != null) {
         const rMult = rSpikeMult(prev, b);
         if (rMult != null && rMult >= R_SPIKE_MULT && rAbsOf(b) >= R_MIN_ABS) {
@@ -1116,16 +1135,22 @@
             setupEvent = makeEvent("WASPADA DUMP", b, i, prev, rMult, bars);
           } else if (b.priceChgPct < 0 && b.cumCVD < prev.cumCVD) {
             setupEvent = makeEvent("SIAP2 PUMP", b, i, prev, rMult, bars);
+          } else if (b.cumCVD < prev.cumCVD && isSellAbsorptionPump(b)) {
+            setupEvent = makeEvent(SELL_ABSORPTION_SIGNAL, b, i, prev, rMult, bars);
           }
-          if (setupEvent) { evs.push(setupEvent); latestSetup = setupEvent; }
+          if (setupEvent) {
+            evs.push(setupEvent);
+            // BATTLE tetap hanya mengikuti dua setup lama, sesuai kontrak sinyal.
+            if (isBattleTriggerSignal(setupEvent.signal)) latestBattleTrigger = setupEvent;
+          }
         }
       }
 
       // BATTLE hanya boleh muncul jika pada bar SEBELUMNYA sudah ada
       // WASPADA DUMP atau SIAP2 PUMP di klaster aktif. Bar battle wajib selesai.
       const stats = battleStats(b, thresholds);
-      if (stats && priorSetup && priorSetup.confirmIdx < i) {
-        evs.push(makeBattleEvent(b, i, stats, bars, priorSetup));
+      if (stats && priorBattleTrigger && priorBattleTrigger.confirmIdx < i) {
+        evs.push(makeBattleEvent(b, i, stats, bars, priorBattleTrigger));
       }
     }
     return { events: evs, pending: null, battleThresholds: thresholds };
@@ -1143,7 +1168,7 @@
     if (!evs.length) {
       const reason = cb.length < BATTLE_MIN_BARS
         ? `NETRAL — battle butuh ≥${BATTLE_MIN_BARS} bar selesai; klaster terakhir ${cb.length} bar.`
-        : "NETRAL — belum ada WASPADA DUMP / SIAP2 PUMP / BATTLE TERJADI.";
+        : "NETRAL — belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI.";
       return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason, last: cb[cb.length - 1], bars: cb, pending: null, events: evs };
     }
     const c = evs[evs.length - 1];
@@ -1177,8 +1202,14 @@
       return lines.join("\n");
     }
 
-    if (c.signal === "WASPADA DUMP") lines.push("🔴 WASPADA DUMP — harga naik + cumCVD naik + R ≥10× sebelumnya + |R|≥10");
-    else lines.push("🟢 SIAP2 PUMP — harga turun + cumCVD turun + R ≥10× sebelumnya + |R|≥10");
+    if (c.signal === "WASPADA DUMP") {
+      lines.push("🔴 WASPADA DUMP — harga naik + cumCVD naik + R ≥10× sebelumnya + |R|≥10");
+    } else if (c.signal === "SIAP2 PUMP") {
+      lines.push("🟢 SIAP2 PUMP — harga turun + cumCVD turun + R ≥10× sebelumnya + |R|≥10");
+    } else if (c.signal === SELL_ABSORPTION_SIGNAL) {
+      lines.push("🟢 SERAP SELL — POTENSI PUMP — CVD SELL besar diserap; harga tertahan atau naik tipis.");
+      lines.push(`syarat serap: R negatif · CVD bersih ≤−${MIN_SPIKE_CVD} SOL · harga 0,00% s/d +${SELL_ABSORB_MAX_UP_PCT.toFixed(1)}%`);
+    }
     if (e.rMult != null) lines.push(`R setup ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)}  (${e.rMult.toFixed(1)}×)`);
     const sR = e.setupR;
     lines.push(`[SETUP] ${fmtBar(s)}: harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}% · R=${sR >= 0 ? "+" : ""}${Number(sR).toFixed(2)} · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL`);
@@ -1223,11 +1254,15 @@
       const px = x(i), py = b.high != null ? yP(b.high) : padT + 10;
       const dump = ev.signal === "WASPADA DUMP";
       const battle = ev.signal === "BATTLE TERJADI";
+      const sellAbsorption = ev.signal === SELL_ABSORPTION_SIGNAL;
       const col = battle ? "#fbbf24" : dump ? "#ef4444" : "#22c55e";
       if (battle) {
         const lo = fmtMarketCap(ev.ev && ev.ev.rangeLowMc);
         const hi = fmtMarketCap(ev.ev && ev.ev.rangeHighMc);
         s1 += `<polygon points="${px},${py - 8} ${px + 7},${py} ${px},${py + 8} ${px - 7},${py}" fill="${col}" stroke="#fde68a" stroke-width="1.3"><title>${ev.signal} ${fmtBar(b)} | range MC ${lo} — ${hi}</title></polygon>`;
+      } else if (sellAbsorption) {
+        // Lingkaran membedakan SERAP SELL dari segitiga SIAP2 PUMP di chart.
+        s1 += `<circle cx="${px}" cy="${py}" r="6" fill="${col}" stroke="#bbf7d0" stroke-width="1.4"><title>${ev.signal} ${fmtBar(b)}</title></circle>`;
       } else {
         const tip = dump
           ? `${px},${py + 8} ${px - 6},${py - 3} ${px + 6},${py - 3}`
@@ -1337,7 +1372,7 @@
     L.push("# bars=" + bars.length + " | total_clusters=" + (allBars.length ? allBars[allBars.length - 1].cluster + 1 : 0) + " | active_cluster=" + (selectedCluster == null ? "latest" : selectedCluster));
     L.push("# current_signal=" + cls.signal + " conf=" + (cls.conf || 0));
     L.push("# signal_history=" + (sigLine || "(none)"));
-    L.push("# NOTE: BATTLE hanya setelah WASPADA DUMP/SIAP2 PUMP; gap buy-sell ≤2.5%; TX, unique makers, dan fresh_wallet ≥P65 periode aktif; range=low-high MARKET CAP. Tanpa AKTIVASI/konfirmasi. Jam=WIB.");
+    L.push("# NOTE: SERAP SELL — POTENSI PUMP = spike R negatif + CVD bersih ≤−8 SOL + harga tertahan/naik ≤3%; tidak memicu BATTLE. BATTLE hanya setelah WASPADA DUMP/SIAP2 PUMP; gap buy-sell ≤2.5%; TX, unique makers, dan fresh_wallet ≥P65 periode aktif; range=low-high MARKET CAP. Tanpa AKTIVASI/konfirmasi. Jam=WIB.");
     L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,cvd,cvd_clean,cum_cvd,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol");
     for (const b of bars) {
       L.push([
@@ -1361,6 +1396,7 @@
   const SIG_META = {
     "WASPADA DUMP": { color: "#ef4444", label: "🔴 WASPADA DUMP" },
     "SIAP2 PUMP": { color: "#22c55e", label: "🟢 SIAP2 PUMP" },
+    [SELL_ABSORPTION_SIGNAL]: { color: "#22c55e", label: "🟢 SERAP SELL — POTENSI PUMP" },
     "BATTLE TERJADI": { color: "#fbbf24", label: "⚔️ BATTLE TERJADI" },
     NETRAL: { color: "#94a3b8", label: "⚪ NETRAL" }
   };
@@ -1390,7 +1426,7 @@
       if (shEl._sig !== sig) {
         shEl._sig = sig;
         if (!evs.length) {
-          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada WASPADA DUMP / SIAP2 PUMP / BATTLE TERJADI.</div>`;
+          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI.</div>`;
         } else {
           shEl.innerHTML =
             `<div class="gmgn-hist-head"><span>Sinyal</span><span>Detail</span><span>Metric</span></div>` +
@@ -1516,7 +1552,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.1.3</span>
+        <span class="t">🥄 SMART SEROK v9.1.4</span>
         <span id="gmgn-tf-badge">1H · R×10 · |R|≥10</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -1547,7 +1583,7 @@
         <div id="gmgn-sighist"></div>
         <div id="gmgn-sig-tip"></div>
         <div class="gmgn-note">
-          ⚔️ BATTLE hanya setelah 🔴 WASPADA DUMP / 🟢 SIAP2 PUMP. Syarat: gap BUY–SELL ≤2,5% serta TX, wallet unik, dan tag fresh_wallet ≥P65 periode aktif. Range battle memakai LOW–HIGH MARKET CAP. Tanpa aktivasi/konfirmasi otomatis.
+          🟢 SERAP SELL — POTENSI PUMP: R negatif spike + CVD bersih ≤−8 SOL saat harga tertahan/naik ≤3%; tidak memicu BATTLE. ⚔️ BATTLE hanya setelah 🔴 WASPADA DUMP / 🟢 SIAP2 PUMP. Syarat BATTLE: gap BUY–SELL ≤2,5% serta TX, wallet unik, dan tag fresh_wallet ≥P65 periode aktif. Range battle memakai LOW–HIGH MARKET CAP. Tanpa aktivasi/konfirmasi otomatis.
         </div>
       </div>
     </div>`;
