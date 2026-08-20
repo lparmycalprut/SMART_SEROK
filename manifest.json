@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.0",
-  "description": "SMART SEROK v9.2.0 — LEVEL ENGINE: resistance/support dari penyerapan terbukti + alert retest, dalam market cap.",
+  "version": "9.2.1",
+  "description": "SMART SEROK v9.2.1 — LEVEL ENGINE: retest ke GARIS level (HIGH resistance / LOW support) dengan syarat harga pergi dulu.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

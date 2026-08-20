@@ -1,4 +1,4 @@
-SMART SEROK v9.2.0 — LEVEL ENGINE
+SMART SEROK v9.2.1 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -22,21 +22,36 @@ EMPAT SINYAL
      - R runtuh ≤50% dari R candle penyerapan (median bar sesudahnya)
      - cumCVD turun
      - harga turun ≥2%
-   Level = LOW–HIGH candle penyerapan itu, dinyatakan dalam MARKET CAP.
+   GARIS LEVEL = HIGH candle penyerapan, dinyatakan dalam MARKET CAP.
+   (rentang LOW–HIGH tetap ditampilkan sebagai konteks)
 
 2. SUPPORT TERBENTUK
    Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), lalu terbukti dengan
    R runtuh, cumCVD naik, dan harga naik ≥2%.
+   GARIS LEVEL = LOW candle penyerapan.
 
 3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
-   Harga kembali menyentuh zona resistance, TETAPI:
+   Harga kembali menyentuh GARIS resistance (HIGH candle penyerapan), TETAPI:
      - |R| hanya ≤1,2× median |R| klaster aktif (tidak ada perlawanan berarti)
      - cumCVD NAIK
    Artinya seller yang dulu menjaga level itu sudah tidak ada. No supply lagi di situ.
 
 4. RETEST SUPPORT — KEMUNGKINAN BREAKDOWN
-   Harga kembali ke zona support dengan R normal dan cumCVD TURUN.
-   Buyer yang dulu menjaga sudah tidak hadir.
+   Harga kembali menyentuh GARIS support (LOW candle penyerapan) dengan R normal
+   dan cumCVD TURUN. Buyer yang dulu menjaga sudah tidak hadir.
+
+RETEST = KEMBALI KE GARIS, BUKAN KE PITA
+----------------------------------------
+Retest diukur terhadap SATU GARIS:
+  resistance -> HIGH candle penyerapan
+  support    -> LOW  candle penyerapan
+Toleransi sentuhan 0,5% dari harga garis.
+
+Selain itu harga wajib PERGI dulu sebelum boleh dihitung "kembali": harus menjauh
+minimal 3% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
+harga yang masih berkeliaran di sekitar level yang baru terbentuk akan salah
+terbaca sebagai retest. Setelah satu alert, level dikunci lagi sampai harga
+kembali menjauh — jadi tetap satu alert per kunjungan.
 
 PENYERAPAN GAGAL
 ----------------
@@ -47,11 +62,6 @@ dengan penyerapan, itu dianggap GAGAL:
 Ini yang membedakan v9.2.0 dari versi lama: dulu spike R langsung jadi sinyal,
 sekarang wajib dibuktikan dulu oleh pergerakan harga sesudahnya.
 
-SATU ALERT PER KUNJUNGAN
-------------------------
-Candle berturut-turut di zona yang sama tidak memunculkan alert berulang. Alert baru
-hanya muncul setelah harga keluar zona lalu kembali lagi.
-
 AMBANG (content.js)
 -------------------
   R_SPIKE_MULT      10     |R| vs bar sebelumnya
@@ -61,7 +71,8 @@ AMBANG (content.js)
   LVL_R_DROP        0.5    R sesudahnya harus ≤50%
   LVL_MIN_MOVE_PCT  2      harga wajib bergerak ≥2% ke arah yang benar
   LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
-  LVL_ZONE_PAD_PCT  0.5    toleransi sentuhan zona saat retest
+  LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
+  LVL_EXIT_PCT      3      harga wajib menjauh ≥3% dari garis sebelum retest
   LVL_RETEST_R_MAX  1.2    retest valid bila |R| ≤1,2× median klaster
 
 R MONITOR

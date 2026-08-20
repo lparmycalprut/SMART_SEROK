@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.0
+ * SMART SEROK — v9.2.1
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -75,7 +75,13 @@
   const LVL_R_DROP = 0.5;               // R sesudahnya harus ≤50% R candle penyerapan
   const LVL_MIN_MOVE_PCT = 2;           // harga wajib bergerak ≥2% ke arah yang benar
   const LVL_FAIL_PCT = 2;               // tembus >2% melewati level = penyerapan gagal
-  const LVL_ZONE_PAD_PCT = 0.5;         // toleransi sentuhan zona saat retest (% dari harga level)
+  // Retest = harga kembali ke GARIS level, bukan ke pita LOW-HIGH.
+  //   resistance -> garisnya HIGH candle penyerapan
+  //   support    -> garisnya LOW  candle penyerapan
+  const LVL_LINE_PAD_PCT = 0.5;         // toleransi sentuhan garis (% dari harga garis)
+  // Harga wajib PERGI dulu sebelum boleh dihitung "kembali". Tanpa syarat ini,
+  // harga yang masih berkeliaran di sekitar level baru ikut terhitung retest.
+  const LVL_EXIT_PCT = 3;               // % menjauh dari garis agar level "armed"
   const LVL_RETEST_MIN_GAP = 2;         // jeda minimal (bar) sebelum retest dihitung
   const LVL_RETEST_R_MAX = 1.2;         // retest valid bila |R| ≤1,2× median klaster
   const SIG_RESISTANCE = "RESISTANCE TERBENTUK";
@@ -1153,7 +1159,9 @@
         proofRAfter: proof.rAfter,
         proofBars: proof.bars,
         rangeLowMc: b.lowMc,
-        rangeHighMc: b.highMc
+        rangeHighMc: b.highMc,
+        lineMc: isRes ? b.highMc : b.lowMc,
+        linePrice: isRes ? b.high : b.low
       }
     };
   }
@@ -1182,21 +1190,25 @@
         levelStart: level.start,
         rangeLowMc: level.lowMc,
         rangeHighMc: level.highMc,
+        lineMc: level.kind === "resistance" ? level.highMc : level.lowMc,
+        linePrice: levelLine(level),
         cumCvdDelta: b.cumCVD
       }
     };
   }
 
-  // Apakah candle menyentuh zona level (HIGH-LOW + toleransi)?
-  function touchesZone(b, level) {
-    if (!level || level.low == null || level.high == null) return false;
+  // Garis level: HIGH untuk resistance, LOW untuk support.
+  function levelLine(level) {
+    if (!level) return null;
+    return level.kind === "resistance" ? level.high : level.low;
+  }
+  // Apakah candle menyentuh GARIS level (bukan pita LOW-HIGH)?
+  function touchesLine(b, level) {
+    const line = levelLine(level);
+    if (line == null || !(line > 0)) return false;
     if (b.high == null || b.low == null) return false;
-    // Toleransi diukur dari harga level itu sendiri, bukan ditumpuk dengan tinggi
-    // zona — kalau tidak, candle yang masih jauh di bawah level ikut terhitung.
-    const mid = (level.high + level.low) / 2;
-    const pad = mid * (LVL_ZONE_PAD_PCT / 100);
-    const lo = level.low - pad, hi = level.high + pad;
-    return b.high >= lo && b.low <= hi;
+    const pad = line * (LVL_LINE_PAD_PCT / 100);
+    return b.high >= line - pad && b.low <= line + pad;
   }
 
   function scanSignals(bars) {
@@ -1232,11 +1244,20 @@
 
       for (const lv of levels) {
         if (i - lv.idx < LVL_RETEST_MIN_GAP) continue;
-        if (!touchesZone(b, lv)) continue;
-        // Satu alert per KUNJUNGAN: candle berturut-turut di zona yang sama
-        // tidak diulang. Alert baru hanya setelah harga keluar zona lalu balik.
-        if (lv.lastTouchIdx != null && i - lv.lastTouchIdx <= 1) { lv.lastTouchIdx = i; continue; }
-        lv.lastTouchIdx = i;
+        const line = levelLine(lv);
+        if (line == null || !(line > 0)) continue;
+
+        // "Kembali" mensyaratkan sebelumnya "pergi". Level baru bisa di-retest
+        // setelah harga menjauh >=LVL_EXIT_PCT dari garisnya. Tanpa ini, harga
+        // yang masih berkeliaran di sekitar level baru ikut terhitung retest.
+        const awayPct = b.close != null ? Math.abs(b.close / line - 1) * 100 : 0;
+        if (awayPct >= LVL_EXIT_PCT) lv.armed = true;
+        if (!lv.armed) continue;
+
+        if (!touchesLine(b, lv)) continue;
+        // Satu alert per kunjungan: sekali menyentuh, level dikunci lagi sampai
+        // harga pergi menjauh dan kembali.
+        lv.armed = false;
         // resistance: retest valid bila cumCVD NAIK (buyer datang lagi)
         // support:    retest valid bila cumCVD TURUN (seller datang lagi)
         if (lv.kind === "resistance" && !cvdUp) continue;
@@ -1294,7 +1315,8 @@
       lines.push(res
         ? "🔴 RESISTANCE TERBENTUK — penyerapan BUY terbukti: harga gagal naik dan berbalik turun."
         : "🟢 SUPPORT TERBENTUK — penyerapan SELL terbukti: harga gagal turun dan berbalik naik.");
-      lines.push(`LEVEL MC: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
+      lines.push(`${res ? "RESISTANCE" : "SUPPORT"} MC: ${fmtMarketCap(e.lineMc)}   (${res ? "HIGH" : "LOW"} candle penyerapan)`);
+      lines.push(`rentang candle: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
       lines.push(`terbentuk: ${fmtBar(s)} WIB`);
       lines.push(`penyerapan: R ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)} (${e.rMult.toFixed(1)}×) · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}%`);
       lines.push(`pembuktian ${e.proofBars} bar: R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(2) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)} · harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(2)}%`);
@@ -1306,7 +1328,7 @@
       lines.push(res
         ? "🔵 RETEST RESISTANCE — KEMUNGKINAN BREAKOUT. Harga kembali ke zona ini tetapi seller penjaga tidak muncul lagi."
         : "🟠 RETEST SUPPORT — KEMUNGKINAN BREAKDOWN. Harga kembali ke zona ini tetapi buyer penjaga tidak muncul lagi.");
-      lines.push(`ZONA MC: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
+      lines.push(`GARIS MC: ${fmtMarketCap(e.lineMc)}   (${res ? "HIGH resistance" : "LOW support"})`);
       lines.push(`level asal: ${fmtTs(e.levelStart)} WIB · retest: ${fmtBar(s)} WIB`);
       lines.push(`R saat retest ${Math.abs(e.setupR).toFixed(2)} = ${e.rNorm.toFixed(2)}× acuan (${e.rBaseline.toFixed(1)}) → tidak ada perlawanan berarti`);
       lines.push(`cumCVD ${res ? "naik" : "turun"} · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}% · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL`);
@@ -1565,17 +1587,19 @@
       const isRtRes = ev.signal === SIG_RETEST_RES;
       const isRtSup = ev.signal === SIG_RETEST_SUP;
       const col = isRes ? "#ef4444" : isSup ? "#22c55e" : isRtRes ? "#38bdf8" : "#f59e0b";
-      const lo = fmtMarketCap(ev.ev && ev.ev.rangeLowMc);
-      const hi = fmtMarketCap(ev.ev && ev.ev.rangeHighMc);
-      const ttl = `${ev.signal} ${fmtBar(b)} | MC ${lo} — ${hi}`;
+      const lineTxt = fmtMarketCap(ev.ev && ev.ev.lineMc);
+      const ttl = `${ev.signal} ${fmtBar(b)} | garis MC ${lineTxt}`;
       if (isRes || isSup) {
-        // level baru = garis tebal setinggi zona penyerapan
+        // Garis level: HIGH untuk resistance, LOW untuk support.
         const yHi = b.high != null ? yP(b.high) : py, yLo = b.low != null ? yP(b.low) : py;
-        s1 += `<rect x="${px - 5}" y="${Math.min(yHi, yLo)}" width="10" height="${Math.max(2, Math.abs(yLo - yHi))}" fill="${col}" opacity="0.85" rx="1.5"><title>${ttl}</title></rect>`;
-        s1 += `<line x1="${padL}" y1="${yHi}" x2="${W - padR}" y2="${yHi}" stroke="${col}" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>`;
+        const yLine = isRes ? yHi : yLo;
+        s1 += `<rect x="${px - 5}" y="${Math.min(yHi, yLo)}" width="10" height="${Math.max(2, Math.abs(yLo - yHi))}" fill="${col}" opacity="0.55" rx="1.5"><title>${ttl}</title></rect>`;
+        s1 += `<line x1="${padL}" y1="${yLine}" x2="${W - padR}" y2="${yLine}" stroke="${col}" stroke-width="1.6" stroke-dasharray="5 3" opacity="0.85"><title>${ttl}</title></line>`;
       } else {
-        // retest = wajik
-        s1 += `<polygon points="${px},${py - 7} ${px + 6},${py} ${px},${py + 7} ${px - 6},${py}" fill="${col}" stroke="#0b1220" stroke-width="1"><title>${ttl}</title></polygon>`;
+        // retest = wajik, digambar tepat di garis level yang dikunjungi
+        const lp = ev.ev && ev.ev.linePrice;
+        const yr = lp != null && lp > 0 ? yP(lp) : py;
+        s1 += `<polygon points="${px},${yr - 7} ${px + 6},${yr} ${px},${yr + 7} ${px - 6},${yr}" fill="${col}" stroke="#0b1220" stroke-width="1"><title>${ttl}</title></polygon>`;
       }
     });
 
@@ -1755,8 +1779,8 @@
               const mark = m.mark || "⚪";
               const gc = e.gradeColor || "#94a3b8";
               const isLvl = e.signal === SIG_RESISTANCE || e.signal === SIG_SUPPORT;
-              const mcTxt = e.ev && e.ev.rangeLowMc != null
-                ? `MC ${fmtMarketCap(e.ev.rangeLowMc)} — ${fmtMarketCap(e.ev.rangeHighMc)}` : "MC —";
+              const mcTxt = e.ev && e.ev.lineMc != null
+                ? `MC ${fmtMarketCap(e.ev.lineMc)}` : "MC —";
               const det = isLvl
                 ? `${fmtTs(e.setup.start)} · ${mcTxt} · R ${Math.abs(e.ev.setupR).toFixed(1)} (${e.ev.rMult.toFixed(0)}×)`
                 : `${fmtTs(e.setup.start)} · ${mcTxt} · R ${e.ev.rNorm.toFixed(2)}× acuan`;
@@ -1910,7 +1934,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.0</span>
+        <span class="t">🥄 SMART SEROK v9.2.1</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
