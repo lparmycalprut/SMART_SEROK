@@ -1,4 +1,4 @@
-SMART SEROK v9.1.4
+SMART SEROK v9.1.7
 ==================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -14,29 +14,31 @@ SIAP2 PUMP (hijau — logika lama tidak diubah)
 
 SERAP SELL — POTENSI PUMP (hijau — sinyal konteks baru)
   |R| ≥ 10× bar sebelumnya + |R| ≥ 10 + R bertanda negatif + cumCVD turun
-  + CVD bersih ≤ −8 SOL + harga tertahan / naik tipis (0% s/d +3%).
+  + CVD bersih ≤ −3 SOL + harga tertahan / naik tipis (0% s/d +3%).
 
 Ini menangkap kondisi seller agresif, tetapi harga tidak berhasil turun karena
 buy-side menyerap jualan. Sinyal ini terpisah dari SIAP2 PUMP; jadi definisi
-SIAP2 PUMP lama tidak berubah. Batas CVD bersih mencegah R besar palsu yang
-hanya terjadi karena perubahan harga nyaris nol dengan effort kecil.
+SIAP2 PUMP lama tidak berubah. Batas CVD bersih −3 SOL menahan effort mikro,
+namun tetap menangkap R− ekstrem ketika harga nyaris tidak bergerak.
 
-BATTLE TERJADI (kuning)
------------------------
-BATTLE hanya boleh muncul jika pada salah satu bar yang lebih awal di klaster aktif sudah muncul:
-  - WASPADA DUMP, atau
-  - SIAP2 PUMP.
-
-SERAP SELL — POTENSI PUMP tidak menjadi pemicu BATTLE.
+BATTLE TERJADI (Bisa LP) (kuning)
+---------------------------------
+BATTLE bersifat mandiri: tidak membutuhkan WASPADA DUMP, SIAP2 PUMP, atau
+SERAP SELL sebelumnya. BATTLE muncul bila candle selesai memenuhi seluruh syarat
+volume, gap BUY/SELL, TX, wallet unik, dan fresh_wallet di bawah.
 
 Badge header menampilkan total wallet bertag fresh yang berhasil ditangkap, sehingga
 bisa langsung dicek apakah respons GMGN benar-benar mengirim tag fresh_wallet.
 
 Semua syarat berikut wajib terpenuhi:
   1. gap = |BUY − SELL| / (BUY + SELL) ≤ 2,5%
-  2. TX ≥ persentil 65 periode/klaster aktif
-  3. wallet unik ≥ persentil 65 periode/klaster aktif
-  4. jumlah wallet unik bertag fresh_wallet ≥ persentil 65 periode/klaster aktif
+  2. total volume candle BATTLE (BUY + SELL) ≥ 200 SOL
+  3. TX ≥ persentil 65 periode/klaster aktif
+  4. wallet unik ≥ persentil 65 periode/klaster aktif
+  5. jumlah wallet unik bertag fresh_wallet ≥ persentil 65 periode/klaster aktif
+
+Pada TF 1H, volume ini berarti total volume pada jam BATTLE. Pada TF 4H/D1,
+ambang yang sama diterapkan ke total volume candle aktif.
 
 Minimum 8 bar selesai untuk menghitung ambang aktivitas. Bar yang masih berjalan
 tidak memunculkan BATTLE agar sinyal tidak berubah intrabar. Tag fresh_wallet wajib

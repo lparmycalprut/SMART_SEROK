@@ -1,10 +1,11 @@
 /**
- * SMART SEROK — v9.1.4
+ * SMART SEROK — v9.1.7
  * --------------------------------------------------------------
  * Sinyal:
  *   🔴 WASPADA DUMP / 🟢 SIAP2 PUMP — |R|≥10× prev + |R|≥10 + harga/cumCVD searah
  *   🟢 SERAP SELL — POTENSI PUMP — spike R negatif, jual bersih besar, harga tertahan/naik tipis
- *   ⚔️ BATTLE TERJADI — hanya setelah setup lama di atas; buy/sell hampir seimbang
+ *   ⚔️ BATTLE TERJADI (Bisa LP) — BUY/SELL hampir seimbang + volume candle ≥200 SOL
+ *                       tanpa perlu event sinyal sebelumnya
  *                       (gap ≤2,5%) + TX, wallet unik, dan wallet bertag
  *                       fresh_wallet minimal P65 periode aktif.
  *                       Range battle = low–high MARKET CAP candle battle.
@@ -51,12 +52,17 @@
 
   const R_SPIKE_MULT = 10;              // |R| vs bar sebelumnya
   const R_MIN_ABS = 10;                 // lantai |R| — buang spike 0.01→1
-  const MIN_SPIKE_CVD = 8;              // SOL — buang R tinggi karena Δharga ~0 + effort kecil
+  // 3 SOL cukup menyaring effort mikro, tetapi tetap menangkap candle 1H dengan
+  // R− ekstrem ketika harga nyaris tidak bergerak (contoh: CVD bersih −3,60 SOL).
+  const SELL_ABSORB_MIN_CVD = 3;
   // SELL besar yang tidak lagi bisa menurunkan harga = buyer menyerap jualan.
   // Batasi kenaikan supaya candle breakout besar tidak salah dibaca sebagai "tertahan".
   const SELL_ABSORB_MAX_UP_PCT = 3;
   const SELL_ABSORPTION_SIGNAL = "SERAP SELL — POTENSI PUMP";
+  const BATTLE_SIGNAL = "BATTLE TERJADI (Bisa LP)";
   const BATTLE_MAX_GAP_PCT = 2.5;       // |buy-sell| / (buy+sell) — hampir seimbang
+  // Per candle aktif: pada TF 1H, ini adalah total BUY+SELL dalam jam BATTLE.
+  const BATTLE_MIN_VOL_SOL = 200;
   const BATTLE_ACTIVITY_PCTL = 0.65;    // TX, wallet unik, dan fresh_wallet minimal P65
   const BATTLE_MIN_BARS = 8;            // minimum bar selesai agar ambang aktivitas cukup stabil
   const SETUP_WASH_MAX = 30;            // % — tidak dipakai sinyal
@@ -354,7 +360,12 @@
     for (const p of parts) if (p.type !== "literal") g[p.type] = p.value;
     return { y: g.year, m: g.month, d: g.day, h: g.hour, min: g.minute };
   }
-  function fmtTs(tsSec) { const p = tzParts(tsSec); return `${p.m}-${p.d} ${p.h}:00`; }
+  const MONTH_NAMES_ID = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+  function fmtDateId(parts) {
+    const month = MONTH_NAMES_ID[parseInt(parts.m, 10) - 1] || parts.m;
+    return `${parseInt(parts.d, 10)} ${month}`;
+  }
+  function fmtTs(tsSec) { const p = tzParts(tsSec); return `${fmtDateId(p)} ${p.h}:00`; }
   function fmtBar(b) { return fmtTs(b.start); }
   function wibDateOf(ts) { const p = tzParts(ts); return `${p.y}-${p.m}-${p.d}`; }
   function wibIso(ts) { const p = tzParts(ts); return `${p.y}-${p.m}-${p.d}T${p.h}:${p.min}`; }
@@ -823,7 +834,7 @@
     keys.forEach((k, i) => {
       const c = cl[k]; const p = tzParts(c[0].start);
       const latest = (i === keys.length - 1);
-      opts.push(`<option value="${k}">cluster ${k} (${p.m}-${p.d}, ${c.length} bar${latest ? " *" : ""})</option>`);
+      opts.push(`<option value="${k}">cluster ${k} (${fmtDateId(p)}, ${c.length} bar${latest ? " *" : ""})</option>`);
     });
     const sig = opts.join("");
     if (sel._sig !== sig) { sel.innerHTML = opts.join(""); sel._sig = sig; }
@@ -857,10 +868,11 @@
     const txFloor = Math.max(activeTf.minTx || 0, thresholds.tx || 0);
     const makersFloor = thresholds.makers || 0;
     const freshFloor = Math.max(1, thresholds.fresh || 0);
+    const volFloor = BATTLE_MIN_VOL_SOL;
     if (!thresholds.freshTagsSeen || gapPct > BATTLE_MAX_GAP_PCT ||
-        (b.txCount || 0) < txFloor || (b.uniqueMakers || 0) < makersFloor ||
-        (b.freshWallets || 0) < freshFloor) return null;
-    return { gapPct, txFloor, makersFloor, freshFloor, samples: thresholds.samples };
+        (b.volSol || 0) < volFloor || (b.txCount || 0) < txFloor ||
+        (b.uniqueMakers || 0) < makersFloor || (b.freshWallets || 0) < freshFloor) return null;
+    return { gapPct, volFloor, txFloor, makersFloor, freshFloor, samples: thresholds.samples };
   }
   function fmtPrice(v) {
     if (v == null || !isFinite(v)) return "—";
@@ -1024,14 +1036,10 @@
   function isBullishSignal(kind) {
     return kind === "SIAP2 PUMP" || kind === SELL_ABSORPTION_SIGNAL;
   }
-  function isBattleTriggerSignal(kind) {
-    // SERAP SELL adalah konteks potensi pump, bukan setup BATTLE baru.
-    return kind === "WASPADA DUMP" || kind === "SIAP2 PUMP";
-  }
   function isSellAbsorptionPump(b) {
     if (!b || b.signedR == null || b.priceChgPct == null) return false;
     const cleanCvd = b.cvdClean != null ? b.cvdClean : (b.cvd || 0);
-    return b.signedR < 0 && cleanCvd <= -MIN_SPIKE_CVD &&
+    return b.signedR < 0 && cleanCvd <= -SELL_ABSORB_MIN_CVD &&
       b.priceChgPct >= 0 && b.priceChgPct <= SELL_ABSORB_MAX_UP_PCT;
   }
   function serapTag(b) {
@@ -1073,7 +1081,7 @@
     };
   }
 
-  function makeBattleEvent(b, i, stats, bars, trigger) {
+  function makeBattleEvent(b, i, stats, bars) {
     const balanceQuality = Math.max(0, 1 - stats.gapPct / BATTLE_MAX_GAP_PCT);
     const txRatio = stats.txFloor > 0 ? (b.txCount || 0) / stats.txFloor : 1;
     const makerRatio = stats.makersFloor > 0 ? (b.uniqueMakers || 0) / stats.makersFloor : 1;
@@ -1082,7 +1090,7 @@
     const score = Math.max(20, Math.min(99, Math.round(50 + balanceQuality * 30 + activityBoost * 19)));
     const g = gradeFromScore(score);
     return {
-      signal: "BATTLE TERJADI",
+      signal: BATTLE_SIGNAL,
       side: (b.priceChgPct || 0) < 0 ? "bottom" : "top",
       conf: score,
       grade: stats.gapPct.toFixed(2) + "%",
@@ -1099,19 +1107,17 @@
         confirmCvd: b.cvdClean != null ? b.cvdClean : b.cvd,
         trend: priceTrendPct(bars, i, TREND_BARS),
         dropPct: 0,
-        gap: i - trigger.confirmIdx,
         rMult: null,
         prevR: null,
         serap: serapTag(b),
         balanceGapPct: stats.gapPct,
+        volFloor: stats.volFloor,
         txFloor: stats.txFloor,
         makersFloor: stats.makersFloor,
         freshFloor: stats.freshFloor,
         activitySamples: stats.samples,
         rangeLowMc: b.lowMc,
-        rangeHighMc: b.highMc,
-        triggerSignal: trigger.signal,
-        triggerStart: trigger.confirm.start
+        rangeHighMc: b.highMc
       }
     };
   }
@@ -1119,11 +1125,9 @@
   function scanSignals(bars) {
     const evs = [];
     const thresholds = battleThresholds(bars);
-    let latestBattleTrigger = null;
     if (!bars || !bars.length) return { events: evs, pending: null, battleThresholds: thresholds };
     for (let i = 0; i < bars.length; i++) {
       const b = bars[i], prev = i > 0 ? bars[i - 1] : null;
-      const priorBattleTrigger = latestBattleTrigger;
 
       // Setup lama tetap sama. SERAP SELL ditambahkan sebagai sinyal terpisah:
       // CVD SELL kuat diserap saat harga setidaknya tertahan, bukan SIAP2 PUMP.
@@ -1138,20 +1142,14 @@
           } else if (b.cumCVD < prev.cumCVD && isSellAbsorptionPump(b)) {
             setupEvent = makeEvent(SELL_ABSORPTION_SIGNAL, b, i, prev, rMult, bars);
           }
-          if (setupEvent) {
-            evs.push(setupEvent);
-            // BATTLE tetap hanya mengikuti dua setup lama, sesuai kontrak sinyal.
-            if (isBattleTriggerSignal(setupEvent.signal)) latestBattleTrigger = setupEvent;
-          }
+          if (setupEvent) evs.push(setupEvent);
         }
       }
 
-      // BATTLE hanya boleh muncul jika pada bar SEBELUMNYA sudah ada
-      // WASPADA DUMP atau SIAP2 PUMP di klaster aktif. Bar battle wajib selesai.
+      // BATTLE mandiri: tidak membutuhkan WASPADA DUMP / SIAP2 PUMP sebelumnya.
+      // Bar tetap wajib selesai dan memenuhi gap, volume, TX, wallet, serta fresh_wallet.
       const stats = battleStats(b, thresholds);
-      if (stats && priorBattleTrigger && priorBattleTrigger.confirmIdx < i) {
-        evs.push(makeBattleEvent(b, i, stats, bars, priorBattleTrigger));
-      }
+      if (stats) evs.push(makeBattleEvent(b, i, stats, bars));
     }
     return { events: evs, pending: null, battleThresholds: thresholds };
   }
@@ -1168,7 +1166,7 @@
     if (!evs.length) {
       const reason = cb.length < BATTLE_MIN_BARS
         ? `NETRAL — battle butuh ≥${BATTLE_MIN_BARS} bar selesai; klaster terakhir ${cb.length} bar.`
-        : "NETRAL — belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI.";
+        : "NETRAL — belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI (Bisa LP).";
       return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason, last: cb[cb.length - 1], bars: cb, pending: null, events: evs };
     }
     const c = evs[evs.length - 1];
@@ -1191,10 +1189,10 @@
   function buildNarrative(c) {
     const e = c.ev, s = c.setup;
     const lines = [];
-    if (c.signal === "BATTLE TERJADI") {
-      lines.push(`⚔️ BATTLE TERJADI — BUY/SELL hampir seimbang; TX, wallet unik, dan fresh_wallet memenuhi ambang aktivitas P65.`);
-      lines.push(`pemicu sebelumnya: ${e.triggerSignal} ${fmtTs(e.triggerStart)} WIB · jarak ${e.gap} bar`);
-      lines.push(`[BATTLE] ${fmtBar(s)}: BUY ${(s.buySol || 0).toFixed(2)} vs SELL ${(s.sellSol || 0).toFixed(2)} SOL · gap ${e.balanceGapPct.toFixed(2)}%`);
+    if (c.signal === BATTLE_SIGNAL) {
+      lines.push(`⚔️ BATTLE TERJADI (Bisa LP) — BUY/SELL hampir seimbang; volume, TX, wallet unik, dan fresh_wallet memenuhi ambang.`);
+      lines.push("BATTLE mandiri: tidak membutuhkan sinyal sebelumnya.");
+      lines.push(`[BATTLE] ${fmtBar(s)}: BUY ${(s.buySol || 0).toFixed(2)} vs SELL ${(s.sellSol || 0).toFixed(2)} SOL · total ${(s.volSol || 0).toFixed(2)} SOL (batas ≥${(e.volFloor || BATTLE_MIN_VOL_SOL).toFixed(0)}) · gap ${e.balanceGapPct.toFixed(2)}%`);
       lines.push(`RANGE BATTLE MC: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
       lines.push(`aktivitas: ${s.txCount} TX (batas ≥${Math.ceil(e.txFloor)}) · ${s.uniqueMakers} wallet unik (batas ≥${Math.ceil(e.makersFloor)})`);
       lines.push(`fresh_wallet: ${s.freshWallets} unik / ${s.freshWalletPct.toFixed(1)}% (batas ≥${Math.ceil(e.freshFloor)}) · tagged ${s.taggedMakers}/${s.uniqueMakers}`);
@@ -1208,7 +1206,7 @@
       lines.push("🟢 SIAP2 PUMP — harga turun + cumCVD turun + R ≥10× sebelumnya + |R|≥10");
     } else if (c.signal === SELL_ABSORPTION_SIGNAL) {
       lines.push("🟢 SERAP SELL — POTENSI PUMP — CVD SELL besar diserap; harga tertahan atau naik tipis.");
-      lines.push(`syarat serap: R negatif · CVD bersih ≤−${MIN_SPIKE_CVD} SOL · harga 0,00% s/d +${SELL_ABSORB_MAX_UP_PCT.toFixed(1)}%`);
+      lines.push(`syarat serap: R negatif · CVD bersih ≤−${SELL_ABSORB_MIN_CVD} SOL · harga 0,00% s/d +${SELL_ABSORB_MAX_UP_PCT.toFixed(1)}%`);
     }
     if (e.rMult != null) lines.push(`R setup ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)}  (${e.rMult.toFixed(1)}×)`);
     const sR = e.setupR;
@@ -1253,7 +1251,7 @@
       if (!ev) return;
       const px = x(i), py = b.high != null ? yP(b.high) : padT + 10;
       const dump = ev.signal === "WASPADA DUMP";
-      const battle = ev.signal === "BATTLE TERJADI";
+      const battle = ev.signal === BATTLE_SIGNAL;
       const sellAbsorption = ev.signal === SELL_ABSORPTION_SIGNAL;
       const col = battle ? "#fbbf24" : dump ? "#ef4444" : "#22c55e";
       if (battle) {
@@ -1362,7 +1360,7 @@
     const allBars = buildBars(trades);
     const bars = activeBars(allBars), cls = classify(bars);
     const hist = signalHistory(bars);
-    const sigLine = hist.map(h => { const p = tzParts(h.t); return `${p.m}-${p.d} ${p.h}h ${h.signal}(${h.conf})`; }).join(" | ");
+    const sigLine = hist.map(h => `${fmtTs(h.t)} ${h.signal}(${h.conf})`).join(" | ");
     const L = [];
     L.push("# SMART SEROK — ANALISA PACK (bars only, no raw trades) — siap untuk AI");
     L.push("# mint=" + mint);
@@ -1372,7 +1370,7 @@
     L.push("# bars=" + bars.length + " | total_clusters=" + (allBars.length ? allBars[allBars.length - 1].cluster + 1 : 0) + " | active_cluster=" + (selectedCluster == null ? "latest" : selectedCluster));
     L.push("# current_signal=" + cls.signal + " conf=" + (cls.conf || 0));
     L.push("# signal_history=" + (sigLine || "(none)"));
-    L.push("# NOTE: SERAP SELL — POTENSI PUMP = spike R negatif + CVD bersih ≤−8 SOL + harga tertahan/naik ≤3%; tidak memicu BATTLE. BATTLE hanya setelah WASPADA DUMP/SIAP2 PUMP; gap buy-sell ≤2.5%; TX, unique makers, dan fresh_wallet ≥P65 periode aktif; range=low-high MARKET CAP. Tanpa AKTIVASI/konfirmasi. Jam=WIB.");
+    L.push("# NOTE: SERAP SELL — POTENSI PUMP = spike R negatif + CVD bersih ≤−3 SOL + harga tertahan/naik ≤3%. BATTLE TERJADI (Bisa LP) mandiri: tidak perlu sinyal sebelumnya; volume total candle ≥200 SOL; gap buy-sell ≤2.5%; TX, unique makers, dan fresh_wallet ≥P65 periode aktif; range=low-high MARKET CAP. Tanpa AKTIVASI/konfirmasi. Jam=WIB.");
     L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,cvd,cvd_clean,cum_cvd,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol");
     for (const b of bars) {
       L.push([
@@ -1397,7 +1395,7 @@
     "WASPADA DUMP": { color: "#ef4444", label: "🔴 WASPADA DUMP" },
     "SIAP2 PUMP": { color: "#22c55e", label: "🟢 SIAP2 PUMP" },
     [SELL_ABSORPTION_SIGNAL]: { color: "#22c55e", label: "🟢 SERAP SELL — POTENSI PUMP" },
-    "BATTLE TERJADI": { color: "#fbbf24", label: "⚔️ BATTLE TERJADI" },
+    [BATTLE_SIGNAL]: { color: "#fbbf24", label: "⚔️ BATTLE TERJADI (Bisa LP)" },
     NETRAL: { color: "#94a3b8", label: "⚪ NETRAL" }
   };
   function updateUI() {
@@ -1426,22 +1424,22 @@
       if (shEl._sig !== sig) {
         shEl._sig = sig;
         if (!evs.length) {
-          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI.</div>`;
+          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada WASPADA DUMP / SIAP2 PUMP / SERAP SELL — POTENSI PUMP / BATTLE TERJADI (Bisa LP).</div>`;
         } else {
           shEl.innerHTML =
-            `<div class="gmgn-hist-head"><span>Sinyal</span><span>Detail</span><span>Metric</span></div>` +
+            `<div class="gmgn-hist-head"><span>Sinyal & detail</span><span>Metric</span></div>` +
             evs.map(e => {
               const m = SIG_META[e.signal] || {};
               const col = m.color || "#94a3b8";
               const key = eventKey(e);
               const open = openDetailKey === key;
-              const battle = e.signal === "BATTLE TERJADI";
+              const battle = e.signal === BATTLE_SIGNAL;
               const mark = battle ? "⚔️" : e.signal === "WASPADA DUMP" ? "🔴" : "🟢";
               const gc = e.gradeColor || "#94a3b8";
               const sR = e.setup.signedR != null ? e.setup.signedR : e.setup.R;
               const rm = e.ev && e.ev.rMult != null ? e.ev.rMult.toFixed(1) + "×" : "";
               const det = battle
-                ? `${fmtTs(e.setup.start)}  ·  MC ${fmtMarketCap(e.ev.rangeLowMc)} — ${fmtMarketCap(e.ev.rangeHighMc)}  ·  fresh ${e.setup.freshWallets}/${e.setup.uniqueMakers}`
+                ? `${fmtTs(e.setup.start)} · ${(e.setup.volSol || 0).toFixed(1)} SOL · MC ${fmtMarketCap(e.ev.rangeLowMc)} — ${fmtMarketCap(e.ev.rangeHighMc)} · fresh ${e.setup.freshWallets}/${e.setup.uniqueMakers}`
                 : `${fmtTs(e.setup.start)}  ·  R ${sR != null ? (sR >= 0 ? "+" : "") + sR.toFixed(2) : "—"}  ·  ${rm}`;
               return `<div class="gmgn-hist-item${open ? " is-open" : ""}" data-key="${esc(key)}">
                 <div class="gmgn-hist-row">
@@ -1527,16 +1525,17 @@
       #gmgn-effort-widget #gmgn-tf-badge { font-size: 12px; font-weight: 700; color: #fbbf24; background: #0f172a; border: 1px solid #334155; padding: 4px 8px; border-radius: 7px; white-space: nowrap; }
       #gmgn-effort-widget #gmgn-sighist { background: #0b1220; border: 1px solid #1e293b; border-radius: 10px; padding: 8px 10px 10px; color: #94a3b8; max-height: min(48vh, 520px); min-height: 180px; overflow-y: auto; overflow-x: hidden; }
       #gmgn-effort-widget .gmgn-hist-empty { padding: 14px 8px; font-size: 14px; color: #64748b; }
-      #gmgn-effort-widget .gmgn-hist-head, #gmgn-effort-widget .gmgn-hist-row { display: grid; grid-template-columns: 200px minmax(240px, 1fr) 64px; gap: 10px; align-items: center; }
-      #gmgn-effort-widget .gmgn-hist-grade { font-size: 18px; font-weight: 900; letter-spacing: 0.02em; white-space: nowrap; text-align: right; }
-      #gmgn-effort-widget .gmgn-hist-meta { font-size: 13px; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+      #gmgn-effort-widget .gmgn-hist-head { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
+      #gmgn-effort-widget .gmgn-hist-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px; grid-template-areas: "sig grade" "meta meta"; gap: 3px 10px; align-items: start; }
+      #gmgn-effort-widget .gmgn-hist-grade { grid-area: grade; font-size: 18px; font-weight: 900; letter-spacing: 0.02em; white-space: nowrap; text-align: right; }
+      #gmgn-effort-widget .gmgn-hist-meta { grid-area: meta; font-size: 13px; color: #cbd5e1; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
       #gmgn-effort-widget .gmgn-hist-item { cursor: pointer; }
       #gmgn-effort-widget .gmgn-btn-live-on { background: #065f46; color: #d1fae5; }
       #gmgn-effort-widget .gmgn-hist-head { font-size: 12px; font-weight: 700; color: #64748b; padding: 6px 8px 8px; border-bottom: 1px solid #1e293b; letter-spacing: .02em; }
       #gmgn-effort-widget .gmgn-hist-item { position: relative; padding: 8px; border-bottom: 1px solid #1e293b; }
       #gmgn-effort-widget .gmgn-hist-item:last-child { border-bottom: none; }
       #gmgn-effort-widget .gmgn-hist-jam { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; color: #cbd5e1; }
-      #gmgn-effort-widget .gmgn-hist-sig { font-size: 15px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #gmgn-effort-widget .gmgn-hist-sig { grid-area: sig; font-size: 15px; font-weight: 800; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; word-break: break-word; }
       #gmgn-effort-widget .gmgn-hist-conf { font-size: 14px; font-variant-numeric: tabular-nums; color: #94a3b8; text-align: right; }
       #gmgn-effort-widget .gmgn-btn-detail { cursor: pointer; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; border-radius: 7px; padding: 6px 8px; font-size: 12px; font-weight: 700; font-family: inherit; line-height: 1; white-space: nowrap; }
       #gmgn-effort-widget .gmgn-btn-detail:hover { background: #334155; }
@@ -1552,7 +1551,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.1.4</span>
+        <span class="t">🥄 SMART SEROK v9.1.7</span>
         <span id="gmgn-tf-badge">1H · R×10 · |R|≥10</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -1583,7 +1582,7 @@
         <div id="gmgn-sighist"></div>
         <div id="gmgn-sig-tip"></div>
         <div class="gmgn-note">
-          🟢 SERAP SELL — POTENSI PUMP: R negatif spike + CVD bersih ≤−8 SOL saat harga tertahan/naik ≤3%; tidak memicu BATTLE. ⚔️ BATTLE hanya setelah 🔴 WASPADA DUMP / 🟢 SIAP2 PUMP. Syarat BATTLE: gap BUY–SELL ≤2,5% serta TX, wallet unik, dan tag fresh_wallet ≥P65 periode aktif. Range battle memakai LOW–HIGH MARKET CAP. Tanpa aktivasi/konfirmasi otomatis.
+          🟢 SERAP SELL — POTENSI PUMP: R negatif spike + CVD bersih ≤−3 SOL saat harga tertahan/naik ≤3%. ⚔️ BATTLE TERJADI (Bisa LP) mandiri: tidak perlu sinyal sebelumnya. Syarat BATTLE: volume total candle ≥200 SOL, gap BUY–SELL ≤2,5%, serta TX, wallet unik, dan tag fresh_wallet ≥P65 periode aktif. Range battle memakai LOW–HIGH MARKET CAP. Tanpa aktivasi/konfirmasi otomatis.
         </div>
       </div>
     </div>`;

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.1.4",
-  "description": "SMART SEROK v9.1.4 — SERAP SELL untuk R negatif saat harga tertahan; BATTLE wajib fresh_wallet tinggi.",
+  "version": "9.1.7",
+  "description": "SMART SEROK v9.1.7 — BATTLE TERJADI (Bisa LP) mandiri, volume candle ≥200 SOL dan fresh_wallet tinggi.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

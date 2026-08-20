@@ -1,0 +1,7 @@
+# File yang di-upload user lewat portal — staging area, bukan sumber kebenaran.
+# Isinya dipindahkan manual ke root repo setelah di-review.
+_incoming/
+
+__pycache__/
+*.pyc
+.DS_Store
