@@ -1,4 +1,4 @@
-SMART SEROK v9.2.1 — LEVEL ENGINE
+SMART SEROK v9.2.2 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -48,7 +48,7 @@ Retest diukur terhadap SATU GARIS:
 Toleransi sentuhan 0,5% dari harga garis.
 
 Selain itu harga wajib PERGI dulu sebelum boleh dihitung "kembali": harus menjauh
-minimal 3% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
+minimal 2% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
 harga yang masih berkeliaran di sekitar level yang baru terbentuk akan salah
 terbaca sebagai retest. Setelah satu alert, level dikunci lagi sampai harga
 kembali menjauh — jadi tetap satu alert per kunjungan.
@@ -72,7 +72,7 @@ AMBANG (content.js)
   LVL_MIN_MOVE_PCT  2      harga wajib bergerak ≥2% ke arah yang benar
   LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
   LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
-  LVL_EXIT_PCT      3      harga wajib menjauh ≥3% dari garis sebelum retest
+  LVL_EXIT_PCT      2      harga wajib menjauh ≥2% dari garis sebelum retest
   LVL_RETEST_R_MAX  1.2    retest valid bila |R| ≤1,2× median klaster
 
 R MONITOR

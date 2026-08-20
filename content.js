@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.1
+ * SMART SEROK — v9.2.2
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -81,7 +81,9 @@
   const LVL_LINE_PAD_PCT = 0.5;         // toleransi sentuhan garis (% dari harga garis)
   // Harga wajib PERGI dulu sebelum boleh dihitung "kembali". Tanpa syarat ini,
   // harga yang masih berkeliaran di sekitar level baru ikut terhitung retest.
-  const LVL_EXIT_PCT = 3;               // % menjauh dari garis agar level "armed"
+  // 2% cukup membedakan "harga benar-benar pergi" dari "masih menempel di level",
+  // tanpa mematikan retest pada token yang bergerak rapat.
+  const LVL_EXIT_PCT = 2;               // % menjauh dari garis agar level "armed"
   const LVL_RETEST_MIN_GAP = 2;         // jeda minimal (bar) sebelum retest dihitung
   const LVL_RETEST_R_MAX = 1.2;         // retest valid bila |R| ≤1,2× median klaster
   const SIG_RESISTANCE = "RESISTANCE TERBENTUK";
@@ -1232,8 +1234,22 @@
         // status "failed" / "pending" sengaja tidak memunculkan sinyal apa pun
       }
 
-      // 3-4. retest: harga kembali ke zona level dengan R normal
-      if (b.partial || b.R == null || base == null) continue;
+      // 3-4. retest: harga kembali ke GARIS level dengan R normal.
+      //
+      // ARMING dijalankan LEBIH DULU dan TERPISAH dari syarat kualitas candle.
+      // Alasannya: bar-bar saat harga "pergi" biasanya justru ber-R tinggi
+      // (dump/pump keras) atau sepi. Kalau arming ikut disaring oleh R normal
+      // dan effort, level tidak pernah ter-arm dan retest hilang sama sekali.
+      if (b.partial || b.close == null) continue;
+      for (const lv of levels) {
+        if (lv.idx >= i) continue;
+        const ln = levelLine(lv);
+        if (ln == null || !(ln > 0)) continue;
+        if (Math.abs(b.close / ln - 1) * 100 >= LVL_EXIT_PCT) lv.armed = true;
+      }
+
+      // Saringan kualitas candle hanya untuk MEMUNCULKAN sinyal, bukan arming.
+      if (b.R == null || base == null) continue;
       const absR = rAbsOf(b);
       const rNorm = base > 1e-9 ? absR / base : null;
       if (rNorm == null || rNorm > LVL_RETEST_R_MAX) continue;
@@ -1244,24 +1260,16 @@
 
       for (const lv of levels) {
         if (i - lv.idx < LVL_RETEST_MIN_GAP) continue;
-        const line = levelLine(lv);
-        if (line == null || !(line > 0)) continue;
-
-        // "Kembali" mensyaratkan sebelumnya "pergi". Level baru bisa di-retest
-        // setelah harga menjauh >=LVL_EXIT_PCT dari garisnya. Tanpa ini, harga
-        // yang masih berkeliaran di sekitar level baru ikut terhitung retest.
-        const awayPct = b.close != null ? Math.abs(b.close / line - 1) * 100 : 0;
-        if (awayPct >= LVL_EXIT_PCT) lv.armed = true;
-        if (!lv.armed) continue;
-
+        if (!lv.armed) continue;              // harus pernah pergi dulu
         if (!touchesLine(b, lv)) continue;
-        // Satu alert per kunjungan: sekali menyentuh, level dikunci lagi sampai
-        // harga pergi menjauh dan kembali.
-        lv.armed = false;
         // resistance: retest valid bila cumCVD NAIK (buyer datang lagi)
         // support:    retest valid bila cumCVD TURUN (seller datang lagi)
+        // Arah salah = bukan retest yang kita cari; level TETAP armed supaya
+        // kunjungan berikutnya masih bisa memicu sinyal.
         if (lv.kind === "resistance" && !cvdUp) continue;
         if (lv.kind === "support" && cvdUp) continue;
+        // Satu alert per kunjungan: kunci level sampai harga pergi lagi.
+        lv.armed = false;
         evs.push(makeRetestEvent(lv, b, i, rNorm, base));
         break;   // satu retest per candle
       }
@@ -1934,7 +1942,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.1</span>
+        <span class="t">🥄 SMART SEROK v9.2.2</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>

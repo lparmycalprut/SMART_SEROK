@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.1",
-  "description": "SMART SEROK v9.2.1 — LEVEL ENGINE: retest ke GARIS level (HIGH resistance / LOW support) dengan syarat harga pergi dulu.",
+  "version": "9.2.2",
+  "description": "SMART SEROK v9.2.2 — LEVEL ENGINE: perbaikan arming retest; retest ke GARIS level (HIGH resistance / LOW support).",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
