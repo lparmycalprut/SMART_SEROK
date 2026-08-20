@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.2
+ * SMART SEROK — v9.2.3
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -57,7 +57,7 @@
   const CONFIRM_MAX_BARS = 12;          // konfirmasi boleh beberapa candle kemudian
 
   const R_SPIKE_MULT = 10;              // |R| vs bar sebelumnya
-  const R_MIN_ABS = 10;                 // lantai |R| — buang spike 0.01→1
+  const R_MIN_ABS = 50;                 // lantai |R| — di bawah ini bukan penyerapan
   const ABSORB_MIN_CVD = 3;             // SOL — lantai effort agar R tidak artefak
 
   // ── LEVEL ENGINE (v9.2.0) ────────────────────────────────────────────────
@@ -70,10 +70,10 @@
   // candle penyerapan itu, dinyatakan dalam MARKET CAP.
   // Support = kebalikannya (spike −R lalu R turun, cumCVD naik, harga naik).
   // Penyerapan yang harganya justru menembus lebih jauh = GAGAL, tidak jadi level.
-  const LVL_CONFIRM_BARS = 6;           // jendela bar untuk membuktikan penyerapan
+  const LVL_CONFIRM_BARS = 12;          // jendela bar untuk membuktikan penyerapan
   const LVL_MIN_CONFIRM_BARS = 2;       // minimal bar sesudahnya agar bisa dinilai
   const LVL_R_DROP = 0.5;               // R sesudahnya harus ≤50% R candle penyerapan
-  const LVL_MIN_MOVE_PCT = 2;           // harga wajib bergerak ≥2% ke arah yang benar
+  const LVL_MIN_MOVE_PCT = 5;           // harga wajib bergerak ≥5% ke arah yang benar
   const LVL_FAIL_PCT = 2;               // tembus >2% melewati level = penyerapan gagal
   // Retest = harga kembali ke GARIS level, bukan ke pita LOW-HIGH.
   //   resistance -> garisnya HIGH candle penyerapan
@@ -1110,24 +1110,32 @@
     }
 
     const rBase = rAbsOf(b);
-    const last = after[after.length - 1];
-    const movePct = last.close != null ? (last.close / refClose - 1) * 100 : 0;
-    const cvdDelta = (last.cumCVD != null && b.cumCVD != null) ? last.cumCVD - b.cumCVD : 0;
-    // R sesudahnya harus runtuh: pakai median |R| bar sesudahnya.
-    const rAfter = percentile(after.map(a => rAbsOf(a)).filter(v => v != null), 0.5);
+    // Pakai titik TERJAUH yang dicapai, bukan bar terakhir. Contoh nyata:
+    // high 121,76K lalu turun sampai 49,54K — yang membuktikan level adalah
+    // 49,54K itu, meskipun setelahnya harga memantul naik lagi.
+    let extreme = refClose, extIdx = 0;
+    after.forEach((a, k) => {
+      const v = isRes ? a.low : a.high;
+      if (v == null || !(v > 0)) return;
+      if (isRes ? v < extreme : v > extreme) { extreme = v; extIdx = k; }
+    });
+    const movePct = (extreme / refClose - 1) * 100;
+    // cumCVD diukur sampai bar titik terjauh, bukan sampai bar terakhir.
+    const atExt = after[extIdx];
+    const cvdDelta = (atExt && atExt.cumCVD != null && b.cumCVD != null) ? atExt.cumCVD - b.cumCVD : 0;
+    // R sesudahnya harus runtuh: median |R| bar dari penyerapan sampai titik terjauh.
+    const span = after.slice(0, extIdx + 1);
+    const rAfter = percentile(span.map(a => rAbsOf(a)).filter(v => v != null), 0.5);
     const rCollapsed = rBase > 0 && rAfter != null && rAfter <= rBase * LVL_R_DROP;
+    const info = { movePct, cvdDelta, rAfter, rBase, bars: after.length, moveBars: extIdx + 1 };
 
     if (isRes) {
       // resistance terbukti: R runtuh + cumCVD turun + harga turun
       const ok = rCollapsed && cvdDelta < 0 && movePct <= -LVL_MIN_MOVE_PCT;
-      return ok
-        ? { status: "confirmed", movePct, cvdDelta, rAfter, rBase, bars: after.length }
-        : { status: "pending", movePct, cvdDelta, rAfter, rBase, bars: after.length };
+      return Object.assign({ status: ok ? "confirmed" : "pending" }, info);
     }
     const ok = rCollapsed && cvdDelta > 0 && movePct >= LVL_MIN_MOVE_PCT;
-    return ok
-      ? { status: "confirmed", movePct, cvdDelta, rAfter, rBase, bars: after.length }
-      : { status: "pending", movePct, cvdDelta, rAfter, rBase, bars: after.length };
+    return Object.assign({ status: ok ? "confirmed" : "pending" }, info);
   }
 
   function makeLevelEvent(cand, proof, bars) {
@@ -1160,6 +1168,7 @@
         proofCvd: proof.cvdDelta,
         proofRAfter: proof.rAfter,
         proofBars: proof.bars,
+        proofMoveBars: proof.moveBars,
         rangeLowMc: b.lowMc,
         rangeHighMc: b.highMc,
         lineMc: isRes ? b.highMc : b.lowMc,
@@ -1327,7 +1336,7 @@
       lines.push(`rentang candle: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
       lines.push(`terbentuk: ${fmtBar(s)} WIB`);
       lines.push(`penyerapan: R ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)} (${e.rMult.toFixed(1)}×) · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}%`);
-      lines.push(`pembuktian ${e.proofBars} bar: R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(2) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)} · harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(2)}%`);
+      lines.push(`pembuktian: harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(1)}% ke titik terjauh dalam ${e.proofMoveBars} bar · R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(1) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)}`);
       return lines.join("\n");
     }
 
@@ -1942,7 +1951,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.2</span>
+        <span class="t">🥄 SMART SEROK v9.2.3</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>

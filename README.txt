@@ -1,4 +1,4 @@
-SMART SEROK v9.2.2 — LEVEL ENGINE
+SMART SEROK v9.2.3 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -17,17 +17,20 @@ artinya penjaga level sudah tidak hadir lagi — tidak ada supply/demand tersisa
 EMPAT SINYAL
 ------------
 1. RESISTANCE TERBENTUK
-   Candle penyerapan BUY: |R| ≥ 10× bar sebelumnya, |R| ≥ 10, R bertanda POSITIF
-   (net BUY diserap seller). Lalu TERBUKTI dalam ≤6 bar berikutnya:
-     - R runtuh ≤50% dari R candle penyerapan (median bar sesudahnya)
+   Candle penyerapan BUY: |R| ≥ 10× bar sebelumnya DAN |R| ≥ 50, R bertanda POSITIF
+   (net BUY diserap seller). Lalu TERBUKTI dalam ≤12 bar berikutnya:
+     - R runtuh ≤50% dari R candle penyerapan
      - cumCVD turun
-     - harga turun ≥2%
+     - harga turun ≥5% DIUKUR KE TITIK TERJAUH, bukan ke bar terakhir
+
+   Contoh: high 121,76K lalu turun sampai 49,54K (−59%). Yang membuktikan level
+   adalah titik 49,54K itu, meskipun setelahnya harga memantul naik lagi.
    GARIS LEVEL = HIGH candle penyerapan, dinyatakan dalam MARKET CAP.
    (rentang LOW–HIGH tetap ditampilkan sebagai konteks)
 
 2. SUPPORT TERBENTUK
    Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), lalu terbukti dengan
-   R runtuh, cumCVD naik, dan harga naik ≥2%.
+   R runtuh, cumCVD naik, dan harga naik ≥5% ke titik terjauh.
    GARIS LEVEL = LOW candle penyerapan.
 
 3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
@@ -64,12 +67,12 @@ sekarang wajib dibuktikan dulu oleh pergerakan harga sesudahnya.
 
 AMBANG (content.js)
 -------------------
-  R_SPIKE_MULT      10     |R| vs bar sebelumnya
-  R_MIN_ABS         10     lantai |R|
+  R_SPIKE_MULT      10     |R| minimal 10x bar sebelumnya
+  R_MIN_ABS         50     lantai |R| — di bawah ini bukan penyerapan
   ABSORB_MIN_CVD    3 SOL  lantai effort agar R tidak artefak pembagian
-  LVL_CONFIRM_BARS  6      jendela pembuktian
+  LVL_CONFIRM_BARS  12     jendela pembuktian
   LVL_R_DROP        0.5    R sesudahnya harus ≤50%
-  LVL_MIN_MOVE_PCT  2      harga wajib bergerak ≥2% ke arah yang benar
+  LVL_MIN_MOVE_PCT  5      harga wajib bergerak ≥5% ke titik terjauh
   LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
   LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
   LVL_EXIT_PCT      2      harga wajib menjauh ≥2% dari garis sebelum retest
