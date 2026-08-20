@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Portal upload SMART SEROK.
+Portal SMART SEROK — dua arah, tanpa dependency (stdlib saja).
 
-Server kecil tanpa dependency (stdlib saja) untuk mengirim file dari browser
-user ke workspace agent.
+DOWNLOAD (agent -> user)
+    GET /download  membangun ZIP ekstensi on-demand dari file terkini di repo,
+    jadi isinya tidak pernah basi. Struktur ZIP flat supaya hasil ekstraksi
+    langsung bisa dipakai 'Load unpacked' Chrome tanpa masuk subfolder.
 
-Poin penting: tipe file dideteksi dari ISI (magic bytes), bukan dari nama.
-Kasus `SMART_SEROK_v9.1.7.zip.txt` kemarin gagal karena penamaan; di sini file
-seperti itu tetap dikenali sebagai ZIP dan diekstrak otomatis.
+UPLOAD (user -> agent)
+    POST /upload menyimpan file ke `_incoming/`. Tipe dideteksi dari ISI
+    (magic bytes), bukan dari nama. Kasus `SMART_SEROK_v9.1.7.zip.txt` gagal
+    karena penamaan; di sini file seperti itu tetap dikenali ZIP dan diekstrak.
 
 Jalankan:  python3 tools/upload_portal.py --port 8000
-Hasil ada di: _incoming/
 """
 
 import argparse
@@ -133,6 +135,54 @@ def handle_upload(filename, blob):
     }
 
 
+# ── Sisi DOWNLOAD ────────────────────────────────────────────────────────────
+# File yang membentuk ekstensi siap-pasang. ZIP dibangun on-demand dari isi
+# repo terkini, jadi tidak pernah basi.
+EXT_FILES = ["manifest.json", "content.js", "README.txt",
+             "icon16.png", "icon48.png", "icon128.png"]
+
+
+def ext_version():
+    """Baca versi dari manifest.json supaya nama ZIP selalu sinkron."""
+    try:
+        with open(os.path.join(REPO_ROOT, "manifest.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("version", "dev")
+    except Exception:  # noqa: BLE001 - versi hanya untuk penamaan
+        return "dev"
+
+
+def ext_manifest():
+    """Daftar file ekstensi beserta status & ukurannya, untuk ditampilkan di UI."""
+    out = []
+    for name in EXT_FILES:
+        path = os.path.join(REPO_ROOT, name)
+        exists = os.path.isfile(path)
+        out.append({
+            "name": name,
+            "exists": exists,
+            "size": os.path.getsize(path) if exists else 0,
+        })
+    return out
+
+
+def build_ext_zip():
+    """
+    Bangun ZIP ekstensi di memori.
+
+    Struktur dibuat FLAT (tanpa folder pembungkus) supaya hasil ekstraksi bisa
+    langsung dipakai 'Load unpacked' di Chrome tanpa perlu masuk subfolder.
+    """
+    missing = [f["name"] for f in ext_manifest() if not f["exists"]]
+    if missing:
+        raise FileNotFoundError("file hilang: " + ", ".join(missing))
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for name in EXT_FILES:
+            zf.write(os.path.join(REPO_ROOT, name), arcname=name)
+    return buf.getvalue()
+
+
 PAGE = """<!doctype html>
 <html lang="id">
 <head>
@@ -158,6 +208,24 @@ PAGE = """<!doctype html>
        padding:10px 22px;border-radius:9px;font-weight:700;font-size:14px;cursor:pointer}
   .btn:hover{background:#34d399}
   input[type=file]{display:none}
+  .card{background:#0f172a;border:1px solid #1e293b;border-radius:14px;padding:20px 22px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:9px}
+  .ver{background:#052e26;color:#34d399;border:1px solid #10b981;padding:2px 9px;
+       border-radius:6px;font-size:12.5px;font-weight:700}
+  .card p{margin:0 0 15px;color:#94a3b8;font-size:13px}
+  .dl{display:inline-flex;align-items:center;gap:9px;background:#10b981;color:#04231a;
+      text-decoration:none;padding:12px 24px;border-radius:10px;font-weight:800;font-size:14.5px}
+  .dl:hover{background:#34d399}
+  .dl.off{background:#334155;color:#94a3b8;pointer-events:none}
+  .files{margin-top:14px;display:flex;flex-wrap:wrap;gap:7px}
+  .chip{background:#0b1220;border:1px solid #1e293b;border-radius:7px;padding:5px 10px;
+        font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#cbd5e1}
+  .chip.no{border-color:#7f1d1d;color:#fca5a5}
+  .chip s{color:#64748b;margin-left:5px;font-size:11px;text-decoration:none}
+  .steps{margin:14px 0 0;padding:12px 14px;background:#0b1220;border-radius:9px;
+         color:#94a3b8;font-size:12.5px;line-height:1.75}
+  .steps b{color:#cbd5e1}
+  .steps code{background:#111c33;padding:1px 6px;border-radius:4px;color:#fbbf24;font-size:12px}
   #list{margin-top:22px;display:flex;flex-direction:column;gap:10px}
   .item{background:#0f172a;border:1px solid #1e293b;border-left-width:3px;
         border-radius:10px;padding:12px 14px}
@@ -181,11 +249,29 @@ PAGE = """<!doctype html>
 </head>
 <body>
 <div class="wrap">
-  <h1>Portal Upload — SMART SEROK</h1>
-  <div class="sub">
+  <h1>Portal SMART SEROK</h1>
+  <div class="sub">Ambil ekstensi siap-pasang, atau kirim file ke workspace agent.</div>
+
+  <div class="card">
+    <h2>⬇ Download ekstensi <span class="ver" id="ver">—</span></h2>
+    <p>ZIP dibangun saat tombol diklik, langsung dari file terkini di repo — selalu sinkron.</p>
+    <a class="dl" id="dlbtn" href="/download">⬇ Download ZIP</a>
+    <div class="files" id="files"></div>
+    <div class="steps">
+      <b>Pasang di Chrome:</b>
+      1. Ekstrak ZIP (isinya langsung file, tanpa folder pembungkus)
+      2. Buka <code>chrome://extensions</code> → aktifkan <b>Developer mode</b>
+      3. <b>Load unpacked</b> → pilih folder hasil ekstrak
+      4. Kalau sudah pernah terpasang: cukup klik <b>Reload</b>, lalu hard-refresh tab GMGN dengan <code>Ctrl+Shift+R</code>
+    </div>
+  </div>
+
+  <div class="card">
+  <h2>⬆ Kirim file ke agent</h2>
+  <p>
     File masuk ke <code>_incoming/</code>. Tipe dideteksi dari isi file, bukan namanya —
     jadi <code>.zip.txt</code> tetap dikenali sebagai ZIP dan diekstrak otomatis.
-  </div>
+  </p>
 
   <div id="drop">
     <div class="big">Tarik file ke sini</div>
@@ -196,9 +282,31 @@ PAGE = """<!doctype html>
 
   <div id="list"></div>
   <div class="done" id="done">Selesai. Bilang <b>"sudah"</b> di chat, saya langsung baca filenya.</div>
+  </div>
 </div>
 
 <script>
+// ---- sisi download: tampilkan versi + daftar file yang akan masuk ZIP ----
+fetch('/info').then(r=>r.json()).then(d=>{
+  document.getElementById('ver').textContent='v'+d.version;
+  const box=document.getElementById('files');
+  d.files.forEach(f=>{
+    const el=document.createElement('span');
+    el.className='chip'+(f.exists?'':' no');
+    el.textContent=(f.exists?'':'⚠ ')+f.name;
+    if(f.exists){
+      const s=document.createElement('s');
+      s.textContent=f.size<1024?f.size+' B':(f.size/1024).toFixed(1)+' KB';
+      el.appendChild(s);
+    }
+    box.appendChild(el);
+  });
+  if(d.files.some(f=>!f.exists)){
+    const b=document.getElementById('dlbtn');
+    b.className='dl off'; b.textContent='⚠ File ekstensi tidak lengkap';
+  }
+}).catch(()=>{});
+
 const drop=document.getElementById('drop'), inp=document.getElementById('file'),
       list=document.getElementById('list'), done=document.getElementById('done');
 
@@ -280,9 +388,40 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, blob, filename, ctype="application/zip"):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(blob)))
+        self.send_header("Content-Disposition",
+                         'attachment; filename="{}"'.format(filename))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(blob)
+
     def do_GET(self):
-        if self.path.split("?")[0] in ("/", "/index.html"):
+        route = self.path.split("?")[0]
+
+        if route in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
+
+        elif route == "/info":
+            self._send(200, json.dumps({
+                "version": ext_version(),
+                "files": ext_manifest(),
+            }), "application/json")
+
+        elif route == "/download":
+            try:
+                blob = build_ext_zip()
+            except FileNotFoundError as exc:
+                print("  [ERR] build zip: {}".format(exc), flush=True)
+                self._send(500, "Gagal membuat ZIP — {}".format(exc),
+                           "text/plain; charset=utf-8")
+                return
+            name = "SMART_SEROK_v{}.zip".format(ext_version())
+            print("  [ZIP] {} ({} bytes)".format(name, len(blob)), flush=True)
+            self._send_file(blob, name)
+
         else:
             self._send(404, "not found", "text/plain; charset=utf-8")
 
@@ -334,9 +473,12 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(INCOMING, exist_ok=True)
-    print("Portal upload SMART SEROK")
-    print("  listen : http://{}:{}".format(args.host, args.port))
-    print("  tujuan : {}".format(INCOMING), flush=True)
+    missing = [f["name"] for f in ext_manifest() if not f["exists"]]
+    print("Portal SMART SEROK")
+    print("  listen   : http://{}:{}".format(args.host, args.port))
+    print("  download : /download  (ekstensi v{}{})".format(
+        ext_version(), " — TIDAK LENGKAP: " + ", ".join(missing) if missing else ""))
+    print("  upload   : {}".format(INCOMING), flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
