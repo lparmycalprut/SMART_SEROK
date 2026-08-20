@@ -1,95 +1,104 @@
-SMART SEROK v9.1.4
-==================
+SMART SEROK v9.2.3 — LEVEL ENGINE
+=================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
 
-Sinyal setup & konteks
------------------------
-WASPADA DUMP (merah — logika lama tidak diubah)
-  harga naik + cumCVD naik + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
+PERUBAHAN BESAR
+---------------
+Semua sinyal lama DIHAPUS (WASPADA DUMP, SIAP2 PUMP, SERAP SELL, BATTLE TERJADI).
+Sekarang hanya ada 4 sinyal, semuanya berbasis level.
 
-SIAP2 PUMP (hijau — logika lama tidak diubah)
-  harga turun + cumCVD turun + |R| ≥ 10× bar sebelumnya + |R| ≥ 10
+Ide dasarnya: R yang melonjak menandakan ada yang menyerap. Tapi penyerapan bisa
+BERHASIL atau GAGAL. Hanya penyerapan yang TERBUKTI berhasil yang melahirkan level.
+Level itu kemudian dipantau: saat harga kembali ke sana dengan R yang hanya normal,
+artinya penjaga level sudah tidak hadir lagi — tidak ada supply/demand tersisa di situ.
 
-SERAP SELL — POTENSI PUMP (hijau — sinyal konteks baru)
-  |R| ≥ 10× bar sebelumnya + |R| ≥ 10 + R bertanda negatif + cumCVD turun
-  + CVD bersih ≤ −8 SOL + harga tertahan / naik tipis (0% s/d +3%).
+EMPAT SINYAL
+------------
+1. RESISTANCE TERBENTUK
+   Candle penyerapan BUY: |R| ≥ 10× bar sebelumnya DAN |R| ≥ 50, R bertanda POSITIF
+   (net BUY diserap seller). Lalu TERBUKTI dalam ≤12 bar berikutnya:
+     - R runtuh ≤50% dari R candle penyerapan
+     - cumCVD turun
+     - harga turun ≥5% DIUKUR KE TITIK TERJAUH, bukan ke bar terakhir
 
-Ini menangkap kondisi seller agresif, tetapi harga tidak berhasil turun karena
-buy-side menyerap jualan. Sinyal ini terpisah dari SIAP2 PUMP; jadi definisi
-SIAP2 PUMP lama tidak berubah. Batas CVD bersih mencegah R besar palsu yang
-hanya terjadi karena perubahan harga nyaris nol dengan effort kecil.
+   Contoh: high 121,76K lalu turun sampai 49,54K (−59%). Yang membuktikan level
+   adalah titik 49,54K itu, meskipun setelahnya harga memantul naik lagi.
+   GARIS LEVEL = HIGH candle penyerapan, dinyatakan dalam MARKET CAP.
+   (rentang LOW–HIGH tetap ditampilkan sebagai konteks)
 
-BATTLE TERJADI (kuning)
------------------------
-BATTLE hanya boleh muncul jika pada salah satu bar yang lebih awal di klaster aktif sudah muncul:
-  - WASPADA DUMP, atau
-  - SIAP2 PUMP.
+2. SUPPORT TERBENTUK
+   Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), lalu terbukti dengan
+   R runtuh, cumCVD naik, dan harga naik ≥5% ke titik terjauh.
+   GARIS LEVEL = LOW candle penyerapan.
 
-SERAP SELL — POTENSI PUMP tidak menjadi pemicu BATTLE.
+3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
+   Harga kembali menyentuh GARIS resistance (HIGH candle penyerapan), TETAPI:
+     - |R| hanya ≤1,2× median |R| klaster aktif (tidak ada perlawanan berarti)
+     - cumCVD NAIK
+   Artinya seller yang dulu menjaga level itu sudah tidak ada. No supply lagi di situ.
 
-Badge header menampilkan total wallet bertag fresh yang berhasil ditangkap, sehingga
-bisa langsung dicek apakah respons GMGN benar-benar mengirim tag fresh_wallet.
+4. RETEST SUPPORT — KEMUNGKINAN BREAKDOWN
+   Harga kembali menyentuh GARIS support (LOW candle penyerapan) dengan R normal
+   dan cumCVD TURUN. Buyer yang dulu menjaga sudah tidak hadir.
 
-Semua syarat berikut wajib terpenuhi:
-  1. gap = |BUY − SELL| / (BUY + SELL) ≤ 2,5%
-  2. TX ≥ persentil 65 periode/klaster aktif
-  3. wallet unik ≥ persentil 65 periode/klaster aktif
-  4. jumlah wallet unik bertag fresh_wallet ≥ persentil 65 periode/klaster aktif
+RETEST = KEMBALI KE GARIS, BUKAN KE PITA
+----------------------------------------
+Retest diukur terhadap SATU GARIS:
+  resistance -> HIGH candle penyerapan
+  support    -> LOW  candle penyerapan
+Toleransi sentuhan 0,5% dari harga garis.
 
-Minimum 8 bar selesai untuk menghitung ambang aktivitas. Bar yang masih berjalan
-tidak memunculkan BATTLE agar sinyal tidak berubah intrabar. Tag fresh_wallet wajib
-tersedia; tanpa tag fresh_wallet, BATTLE tidak akan muncul.
+Selain itu harga wajib PERGI dulu sebelum boleh dihitung "kembali": harus menjauh
+minimal 2% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
+harga yang masih berkeliaran di sekitar level yang baru terbentuk akan salah
+terbaca sebagai retest. Setelah satu alert, level dikunci lagi sampai harga
+kembali menjauh — jadi tetap satu alert per kunjungan.
 
-Penangkapan tag fresh_wallet
-----------------------------
-Ekstensi menangkap tag dari field GMGN berikut, termasuk bentuk nested:
-  maker_tags, maker_token_tags, maker_event_tags, tags, tag,
-  maker_info.*, dan wallet_info.*
+PENYERAPAN GAGAL
+----------------
+Jika setelah penyerapan harga justru menembus level >2% ke arah yang berlawanan
+dengan penyerapan, itu dianggap GAGAL:
+  - tidak melahirkan level
+  - tidak muncul di daftar sinyal sama sekali
+Ini yang membedakan v9.2.0 dari versi lama: dulu spike R langsung jadi sinyal,
+sekarang wajib dibuktikan dulu oleh pergerakan harga sesudahnya.
 
-Nama tag produksi yang dikenali:
-  fresh_wallet (exact setelah normalisasi huruf/spasi/tanda hubung).
-Field is_new=true pada holder hanya dipakai sebagai fallback/enrichment; tag
-fresh_wallet dari payload GMGN tetap menjadi sumber utama.
+AMBANG (content.js)
+-------------------
+  R_SPIKE_MULT      10     |R| minimal 10x bar sebelumnya
+  R_MIN_ABS         50     lantai |R| — di bawah ini bukan penyerapan
+  ABSORB_MIN_CVD    3 SOL  lantai effort agar R tidak artefak pembagian
+  LVL_CONFIRM_BARS  12     jendela pembuktian
+  LVL_R_DROP        0.5    R sesudahnya harus ≤50%
+  LVL_MIN_MOVE_PCT  5      harga wajib bergerak ≥5% ke titik terjauh
+  LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
+  LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
+  LVL_EXIT_PCT      2      harga wajib menjauh ≥2% dari garis sebelum retest
+  LVL_RETEST_R_MAX  1.2    retest valid bila |R| ≤1,2× median klaster
 
-Agregasi per candle:
-  fresh_wallets, fresh_wallet_pct, fresh_tx, fresh_buy_sol, fresh_sell_sol,
-  dan tagged_makers.
+R MONITOR
+---------
+Mode baca R murni tetap ada. Tombol di toolbar untuk berpindah antara
+R MONITOR dan MODE SINYAL. R MONITOR tidak memberi sinyal, hanya melaporkan
+kondisi perlawanan per candle: BEBAS / NORMAL / SERAP / TEMBOK / SEPI.
 
-Range BATTLE menggunakan market cap
------------------------------------
-Detail BATTLE menampilkan:
-  RANGE BATTLE MC: LOW market cap — HIGH market cap
+MARKET CAP
+----------
+Level dan retest selalu dinyatakan dalam MARKET CAP, bukan price. Ekstensi
+mengambil effective supply dari holder, lalu token_info, lalu inferensi.
+Jika belum tertangkap, detail menampilkan "MC belum tersedia".
 
-Ekstensi otomatis meminta endpoint token_holders saat halaman token dibuka, saat
-Background Fetch/LIVE dimulai, dan tetap menangkap respons holder/top-holder/token-trader
-berdasarkan bentuk payload meskipun nama URL berubah. Dari beberapa
-holder valid, ekstensi mengambil median kandidat berikut agar satu record tidak
-mendistorsi hasil:
-  market cap = usd_value / amount_percentage
-  supply     = amount_cur / amount_percentage
-  price      = usd_value / amount_cur
-Tag holder disimpan per address dan memperkaya trade yang maker_tags-nya kosong.
-Registry tag dan konteks market cap direset saat pindah token atau Reset manual.
-Badge header menampilkan MC dan sumbernya (holder/token_info) agar keberhasilan
-penangkapan konteks market cap dapat diperiksa langsung.
-
-Konversi market cap historis memprioritaskan effective supply hasil holder,
-kemudian rasio market_cap/price dari token_info, total_supply, atau inferensi
-market cap terkini terhadap close terbaru. Jika data belum tertangkap, detail menampilkan
-"MC belum tersedia" dan tidak kembali menggunakan range price.
-
-Export
+EXPORT
 ------
-- BARS menambahkan open/high/low/close market cap dan metrik fresh wallet.
-- RAW TRADES menambahkan kolom tags.
-- Export AI menambahkan market cap dan metrik fresh wallet; current_signal dan
-  signal_history juga memuat SERAP SELL — POTENSI PUMP bila lolos.
+Nama file memakai SIMBOL token, bukan contract address:
+  <SIMBOL>.csv        — recap + BARS + RAW TRADES
+  <SIMBOL>_AI.csv     — ringkas untuk analisa AI
+BARS memuat kolom r_ratio dan r_state dari R MONITOR.
 
-Catatan
+CATATAN
 -------
-- AKTIVASI PUMP dan AKTIVASI DUMP tetap dihapus.
-- Tidak ada konfirmasi fakeout/higher-high otomatis.
+- Tidak ada konfirmasi otomatis; keputusan entry tetap manual.
 - Wash tidak menjadi syarat sinyal; nilainya tetap ditampilkan.
 - Jam menggunakan WIB (Asia/Jakarta, UTC+7).
