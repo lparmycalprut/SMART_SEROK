@@ -141,6 +141,26 @@ def handle_upload(filename, blob):
 EXT_FILES = ["manifest.json", "content.js", "README.txt",
              "icon16.png", "icon48.png", "icon128.png"]
 
+# Paket bot Python siap-unduh. Daftar eksplisit mencegah config.toml, .env,
+# database runtime, atau secret lain ikut masuk arsip secara tidak sengaja.
+BOT_FILES = [
+    "pyproject.toml",
+    "BOT_README.md",
+    "config.example.toml",
+    "bot.env.example",
+    "gmgn_trading_bot/__init__.py",
+    "gmgn_trading_bot/cli.py",
+    "gmgn_trading_bot/config.py",
+    "gmgn_trading_bot/gmgn.py",
+    "gmgn_trading_bot/models.py",
+    "gmgn_trading_bot/monitor.py",
+    "gmgn_trading_bot/notifier.py",
+    "gmgn_trading_bot/signals.py",
+    "gmgn_trading_bot/state.py",
+    "tests/test_bot.py",
+]
+BOT_VERSION = "0.1.0"
+
 
 def ext_version():
     """Baca versi dari manifest.json supaya nama ZIP selalu sinkron."""
@@ -180,6 +200,29 @@ def build_ext_zip():
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for name in EXT_FILES:
             zf.write(os.path.join(REPO_ROOT, name), arcname=name)
+    return buf.getvalue()
+
+
+def bot_manifest():
+    out = []
+    for name in BOT_FILES:
+        path = os.path.join(REPO_ROOT, name)
+        exists = os.path.isfile(path)
+        out.append({"name": name, "exists": exists,
+                    "size": os.path.getsize(path) if exists else 0})
+    return out
+
+
+def build_bot_zip():
+    """Bangun paket bot tanpa secret/config lokal/database runtime."""
+    missing = [f["name"] for f in bot_manifest() if not f["exists"]]
+    if missing:
+        raise FileNotFoundError("file bot hilang: " + ", ".join(missing))
+    buf = io.BytesIO()
+    root = "gmgn_trading_bot"
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for name in BOT_FILES:
+            zf.write(os.path.join(REPO_ROOT, name), arcname=root + "/" + name)
     return buf.getvalue()
 
 
@@ -250,10 +293,26 @@ PAGE = """<!doctype html>
 <body>
 <div class="wrap">
   <h1>Portal SMART SEROK</h1>
-  <div class="sub">Ambil ekstensi siap-pasang, atau kirim file ke workspace agent.</div>
+  <div class="sub">Download bot Python atau ekstensi Chrome dalam ZIP siap pakai.</div>
 
   <div class="card">
-    <h2>⬇ Download ekstensi <span class="ver" id="ver">—</span></h2>
+    <h2>🐍 Download bot Python <span class="ver" id="botver">—</span></h2>
+    <p>Paket monitor watchlist GMGN OpenAPI. API key, token Telegram, config lokal, dan database tidak pernah dimasukkan ke ZIP.</p>
+    <a class="dl" id="botdlbtn" href="/download-bot">⬇ Download gmgn_trading_bot.zip</a>
+    <div class="files" id="botfiles"></div>
+    <div class="steps">
+      <b>Mulai:</b>
+      1. Ekstrak ZIP dan buka folder <code>gmgn_trading_bot</code>
+      2. Salin <code>config.example.toml</code> → <code>config.toml</code>, lalu edit watchlist
+      3. Salin <code>bot.env.example</code> → <code>bot.env</code>, isi secret, lalu jalankan <code>set -a; source bot.env; set +a</code>
+      4. Jalankan Linux/macOS: <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>
+      <br><b>Windows PowerShell:</b> gunakan satu baris <code>python -m gmgn_trading_bot.cli --config config.toml --once</code>. Jangan gunakan <code>\</code> sebagai pemisah baris.
+      <br><b>Auto-trade OFF.</b> Detail lengkap ada di <code>BOT_README.md</code>.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🧩 Download ekstensi Chrome <span class="ver" id="ver">—</span></h2>
     <p>ZIP dibangun saat tombol diklik, langsung dari file terkini di repo — selalu sinkron.</p>
     <a class="dl" id="dlbtn" href="/download">⬇ Download ZIP</a>
     <div class="files" id="files"></div>
@@ -289,22 +348,27 @@ PAGE = """<!doctype html>
 // ---- sisi download: tampilkan versi + daftar file yang akan masuk ZIP ----
 fetch('/info').then(r=>r.json()).then(d=>{
   document.getElementById('ver').textContent='v'+d.version;
-  const box=document.getElementById('files');
-  d.files.forEach(f=>{
-    const el=document.createElement('span');
-    el.className='chip'+(f.exists?'':' no');
-    el.textContent=(f.exists?'':'⚠ ')+f.name;
-    if(f.exists){
-      const s=document.createElement('s');
-      s.textContent=f.size<1024?f.size+' B':(f.size/1024).toFixed(1)+' KB';
-      el.appendChild(s);
+  document.getElementById('botver').textContent='v'+d.bot_version;
+  const renderFiles=(boxId,files,buttonId,label)=>{
+    const box=document.getElementById(boxId);
+    files.forEach(f=>{
+      const el=document.createElement('span');
+      el.className='chip'+(f.exists?'':' no');
+      el.textContent=(f.exists?'':'⚠ ')+f.name;
+      if(f.exists){
+        const s=document.createElement('s');
+        s.textContent=f.size<1024?f.size+' B':(f.size/1024).toFixed(1)+' KB';
+        el.appendChild(s);
+      }
+      box.appendChild(el);
+    });
+    if(files.some(f=>!f.exists)){
+      const b=document.getElementById(buttonId);
+      b.className='dl off'; b.textContent='⚠ File '+label+' tidak lengkap';
     }
-    box.appendChild(el);
-  });
-  if(d.files.some(f=>!f.exists)){
-    const b=document.getElementById('dlbtn');
-    b.className='dl off'; b.textContent='⚠ File ekstensi tidak lengkap';
-  }
+  };
+  renderFiles('files',d.files,'dlbtn','ekstensi');
+  renderFiles('botfiles',d.bot_files,'botdlbtn','bot');
 }).catch(()=>{});
 
 const drop=document.getElementById('drop'), inp=document.getElementById('file'),
@@ -408,6 +472,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({
                 "version": ext_version(),
                 "files": ext_manifest(),
+                "bot_version": BOT_VERSION,
+                "bot_files": bot_manifest(),
             }), "application/json")
 
         elif route == "/download":
@@ -419,6 +485,18 @@ class Handler(BaseHTTPRequestHandler):
                            "text/plain; charset=utf-8")
                 return
             name = "SMART_SEROK_v{}.zip".format(ext_version())
+            print("  [ZIP] {} ({} bytes)".format(name, len(blob)), flush=True)
+            self._send_file(blob, name)
+
+        elif route == "/download-bot":
+            try:
+                blob = build_bot_zip()
+            except FileNotFoundError as exc:
+                print("  [ERR] build bot zip: {}".format(exc), flush=True)
+                self._send(500, "Gagal membuat ZIP bot — {}".format(exc),
+                           "text/plain; charset=utf-8")
+                return
+            name = "gmgn_trading_bot_v{}.zip".format(BOT_VERSION)
             print("  [ZIP] {} ({} bytes)".format(name, len(blob)), flush=True)
             self._send_file(blob, name)
 
@@ -474,10 +552,13 @@ def main():
 
     os.makedirs(INCOMING, exist_ok=True)
     missing = [f["name"] for f in ext_manifest() if not f["exists"]]
+    bot_missing = [f["name"] for f in bot_manifest() if not f["exists"]]
     print("Portal SMART SEROK")
     print("  listen   : http://{}:{}".format(args.host, args.port))
-    print("  download : /download  (ekstensi v{}{})".format(
+    print("  extension: /download  (v{}{})".format(
         ext_version(), " — TIDAK LENGKAP: " + ", ".join(missing) if missing else ""))
+    print("  bot      : /download-bot  (v{}{})".format(
+        BOT_VERSION, " — TIDAK LENGKAP: " + ", ".join(bot_missing) if bot_missing else ""))
     print("  upload   : {}".format(INCOMING), flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 

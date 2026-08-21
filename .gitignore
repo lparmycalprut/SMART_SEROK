@@ -5,3 +5,12 @@ _incoming/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Secrets and local bot runtime
+.env
+*.env
+config.toml
+var/
+*.db
+*.db-shm
+*.db-wal
