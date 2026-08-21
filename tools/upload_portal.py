@@ -148,6 +148,7 @@ BOT_FILES = [
     "BOT_README.md",
     "config.example.toml",
     "bot.env.example",
+    "update_from_zip.ps1",
     "gmgn_trading_bot/__init__.py",
     "gmgn_trading_bot/cli.py",
     "gmgn_trading_bot/config.py",
@@ -159,7 +160,7 @@ BOT_FILES = [
     "gmgn_trading_bot/state.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.1.2"
+BOT_VERSION = "0.1.3"
 
 
 def ext_version():
@@ -307,6 +308,7 @@ PAGE = """<!doctype html>
       3. Salin <code>bot.env.example</code> → <code>bot.env</code> dan isi secret; bot memuatnya otomatis di semua OS
       4. Jalankan Linux/macOS: <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>
       <br><b>Windows PowerShell:</b> gunakan satu baris <code>python -m gmgn_trading_bot.cli --config config.toml --once</code>. Jangan gunakan <code>\</code> sebagai pemisah baris.
+      <br><b>Update aman:</b> jalankan <code>.\\update_from_zip.ps1 -ZipPath "...zip"</code>; <code>bot.env</code>, <code>config.toml</code>, dan database lokal tidak disentuh.
       <br><b>Auto-trade OFF.</b> Detail lengkap ada di <code>BOT_README.md</code>.
     </div>
   </div>

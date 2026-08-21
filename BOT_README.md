@@ -1,4 +1,4 @@
-# gmgn_trading_bot — Chart Monitor v0.1.2
+# gmgn_trading_bot — Chart Monitor v0.1.3
 
 Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
 alert Telegram opsional.
@@ -56,7 +56,28 @@ python -m gmgn_trading_bot.cli --config config.toml
 
 Bot memuat `bot.env` secara otomatis. Isi API key dan Telegram di file tersebut;
 tidak perlu menjalankan `$env:...` setiap membuka PowerShell baru. File `bot.env`
-diabaikan Git dan tidak dimasukkan ke ZIP hasil portal.
+diabaikan Git dan **tidak dimasukkan ke ZIP hasil portal** agar secret tidak bocor.
+
+### Update versi tanpa kehilangan secret/config
+
+Simpan ZIP versi terbaru di komputer, lalu jalankan dari folder bot lama:
+
+```powershell
+.\update_from_zip.ps1 -ZipPath "D:\Downloads\gmgn_trading_bot_vTERBARU.zip"
+```
+
+Updater mengganti source terbaru tetapi selalu mempertahankan tiga item lokal:
+
+- `bot.env` — API key dan Telegram
+- `config.toml` — watchlist dan setting
+- `var/` — database deduplikasi alert
+
+Jadi secret tidak perlu dimasukkan ke ZIP dan tidak perlu diketik ulang. Jika
+PowerShell memblokir script lokal, jalankan satu kali untuk proses tersebut:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
 
 Jika ingin beberapa baris, gunakan backtick PowerShell (`` ` ``), bukan
 backslash. Backtick harus menjadi karakter terakhir pada baris—jangan beri spasi
