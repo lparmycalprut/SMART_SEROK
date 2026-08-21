@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.2 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.3 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
@@ -25,14 +25,16 @@ Pilih VS Code → `Ctrl+Shift+P` → **Terminal: Select Default Profile** →
 
 ```bat
 cd /d D:\gmgn_trading_bot
-copy config.example.toml config.toml
-copy bot.env.example bot.env
 notepad config.toml
 notepad bot.env
 python bot.py --check-config
 python bot.py --once
 python bot.py
 ```
+
+Mulai v0.2.3, ZIP update tidak berisi `bot.env`, `config.toml`, maupun kedua
+file contohnya. Gunakan file lokal yang sudah ada. Jangan ekstrak ZIP langsung
+menimpa instalasi; gunakan updater agar source saja yang diganti.
 
 Cara paling mudah di VS Code: tekan `Ctrl+Shift+B`, lalu pilih
 **Jalankan SMART SEROK Bot**. Launcher lama berbentuk `.bat` telah dihapus agar
