@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gmgn-trading-bot"
-version = "0.1.0"
+version = "0.1.1"
 description = "24/7 GMGN OpenAPI watchlist monitor with optional Telegram alerts"
 requires-python = ">=3.11"
 dependencies = []

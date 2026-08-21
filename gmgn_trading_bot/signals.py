@@ -32,7 +32,7 @@ def detect_chart_signals(
     signals: list[ChartSignal] = []
     prior_high = max(c.high for c in previous)
     prior_low = min(c.low for c in previous)
-    common = f"candle {current.start_iso} · perubahan {current.change_pct:+.2f}% · volume {volume_ratio:.2f}× median"
+    common = f"candle {current.start_wib} · perubahan {current.change_pct:+.2f}% · volume {volume_ratio:.2f}× median"
 
     if current.close > prior_high and volume_ok and move_ok:
         kind = "CHART_BREAKOUT"

@@ -22,6 +22,10 @@ class CandleTests(unittest.TestCase):
     def test_seconds_are_normalized(self):
         self.assertEqual(Candle.from_api([1_700_000_000, 1, 2, 0.5, 1.5, 10]).start_ms, 1_700_000_000_000)
 
+    def test_display_time_is_wib(self):
+        candle = Candle(0, 1, 2, 0.5, 1.5, 10, 0)
+        self.assertEqual(candle.start_wib, "01-01-1970 07:00 WIB")
+
 
 class SignalTests(unittest.TestCase):
     def test_breakout(self):

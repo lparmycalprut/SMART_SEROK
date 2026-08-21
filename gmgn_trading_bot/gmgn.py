@@ -37,7 +37,7 @@ class GMGNClient:
             headers={
                 "X-APIKEY": self.api_key,
                 "Content-Type": "application/json",
-                "User-Agent": "gmgn-trading-bot/0.1.0",
+                "User-Agent": "gmgn-trading-bot/0.1.1",
             },
         )
         try:

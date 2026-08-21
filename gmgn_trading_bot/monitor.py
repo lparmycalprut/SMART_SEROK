@@ -43,7 +43,7 @@ class WatchlistMonitor:
             previous_seen = self.state.last_closed(token.mint, self.config.resolution)
             if previous_seen is None and not self.config.alert_on_startup:
                 self.state.set_last_closed(token.mint, self.config.resolution, newest.start_ms)
-                LOG.info("%s: warm-up di candle %s (tanpa alert historis)", token.symbol, newest.start_iso)
+                LOG.info("%s: warm-up di candle %s (tanpa alert historis)", token.symbol, newest.start_wib)
                 continue
             if previous_seen is not None and newest.start_ms <= previous_seen:
                 LOG.info("%s: tidak ada candle baru · close %.12g", token.symbol, newest.close)
@@ -58,7 +58,7 @@ class WatchlistMonitor:
             )
             LOG.info(
                 "%s: candle baru %s · O %.12g H %.12g L %.12g C %.12g · %+.2f%% · %d signal",
-                token.symbol, newest.start_iso, newest.open, newest.high, newest.low, newest.close,
+                token.symbol, newest.start_wib, newest.open, newest.high, newest.low, newest.close,
                 newest.change_pct, len(signals),
             )
             for signal in signals:

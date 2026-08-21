@@ -1,4 +1,4 @@
-# gmgn_trading_bot — Chart Monitor v0.1
+# gmgn_trading_bot — Chart Monitor v0.1.1
 
 Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
 alert Telegram opsional.

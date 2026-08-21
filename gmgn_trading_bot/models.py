@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +31,13 @@ class Candle:
 
     @property
     def start_iso(self) -> str:
+        """Timestamp ISO UTC untuk penyimpanan/diagnostik teknis."""
         return datetime.fromtimestamp(self.start_ms / 1000, timezone.utc).isoformat()
+
+    @property
+    def start_wib(self) -> str:
+        """Waktu candle yang ramah dibaca dan konsisten dengan GMGN Jakarta."""
+        return datetime.fromtimestamp(self.start_ms / 1000, WIB).strftime("%d-%m-%Y %H:%M WIB")
 
     @classmethod
     def from_api(cls, raw: Any) -> "Candle":

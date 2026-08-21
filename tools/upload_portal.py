@@ -159,7 +159,7 @@ BOT_FILES = [
     "gmgn_trading_bot/state.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.1.0"
+BOT_VERSION = "0.1.1"
 
 
 def ext_version():
