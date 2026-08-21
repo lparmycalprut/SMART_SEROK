@@ -102,6 +102,20 @@ class WatchlistMonitor:
                 except Exception as notify_exc:
                     LOG.error("gagal mengirim provider error ke Telegram: %s", notify_exc)
 
+    def resolve_symbol(self, mint: str) -> str:
+        """Resolve symbol from GMGN metadata before persisting a Telegram /add."""
+        info = self.client.get_token_info("sol", mint)
+        roots = [info]
+        for key in ("token", "token_info", "base_token_info", "base_token"):
+            if isinstance(info.get(key), dict):
+                roots.append(info[key])
+        for root in roots:
+            for key in ("symbol", "token_symbol", "base_symbol"):
+                symbol = str(root.get(key) or "").strip()
+                if symbol:
+                    return symbol[:32]
+        raise GMGNError("simbol token tidak ditemukan pada metadata GMGN; CA mungkin tidak valid")
+
     def _mc_per_price(self, mint: str) -> float:
         try:
             info = self.client.get_token_info("sol", mint)

@@ -14,6 +14,7 @@ from gmgn_trading_bot.engine import (
 from gmgn_trading_bot.gmgn import GMGNClient
 from gmgn_trading_bot.gmgn_web import GMGNWebClient, normalize_trade
 from gmgn_trading_bot.models import Candle, WatchToken
+from gmgn_trading_bot.monitor import WatchlistMonitor
 from gmgn_trading_bot.notifier import TelegramNotifier
 from gmgn_trading_bot.state import StateStore
 from gmgn_trading_bot.telegram_control import TelegramController
@@ -144,6 +145,15 @@ class GMGNClientTests(unittest.TestCase):
             self.assertFalse(client._sync_clock_from_http_date("Thu, 01 Jan 1971 00:00:00 GMT"))
 
 
+class MonitorMetadataTests(unittest.TestCase):
+    def test_resolves_nested_symbol(self):
+        monitor = WatchlistMonitor.__new__(WatchlistMonitor)
+        monitor.client = type("Client", (), {
+            "get_token_info": lambda self, chain, mint: {"token_info": {"symbol": "SEROK"}}
+        })()
+        self.assertEqual(monitor.resolve_symbol("A" * 32), "SEROK")
+
+
 class TelegramTests(unittest.TestCase):
     def test_recent_chats_extracts_private_message(self):
         notifier = TelegramNotifier("token", None)
@@ -151,6 +161,17 @@ class TelegramTests(unittest.TestCase):
         with patch.object(notifier, "_call", return_value=updates):
             chats = notifier.recent_chats()
         self.assertEqual(chats, [{"id": "6743", "type": "private", "name": "tester", "text": "/start"}])
+
+    def test_registers_complete_command_menu(self):
+        notifier = TelegramNotifier("token", "123")
+        with patch.object(notifier, "_call") as api:
+            notifier.set_commands()
+        self.assertEqual([call.args[0] for call in api.call_args_list], ["setMyCommands", "setChatMenuButton"])
+        commands = json.loads(api.call_args_list[0].args[1]["commands"])
+        self.assertEqual(
+            [item["command"] for item in commands],
+            ["add", "remove", "list", "pause", "resume", "refresh", "levels", "status", "test", "help"],
+        )
 
 
 class TelegramControlTests(unittest.TestCase):
@@ -168,14 +189,15 @@ class TelegramControlTests(unittest.TestCase):
             last_cycle_at = None
             last_error = None
             level_cache = {}
+            def resolve_symbol(self, mint): return "AUTO"
         with tempfile.TemporaryDirectory() as directory:
             store = StateStore(Path(directory) / "state.db")
             notifier = Notifier()
             controller = TelegramController(notifier, store, Monitor())
             controller._handle({"message": {"chat": {"id": 999}, "text": "/add " + "A" * 32}})
             self.assertEqual(store.list_watchlist(), [])
-            controller._handle({"message": {"chat": {"id": 123}, "text": "/add " + "A" * 32 + " TEST"}})
-            self.assertEqual(store.list_watchlist()[0]["symbol"], "TEST")
+            controller._handle({"message": {"chat": {"id": 123}, "text": "/add " + "A" * 32}})
+            self.assertEqual(store.list_watchlist()[0]["symbol"], "AUTO")
 
             notifier.stale = True
             controller._handle({"callback_query": {

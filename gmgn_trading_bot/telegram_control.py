@@ -12,7 +12,7 @@ LOG = logging.getLogger(__name__)
 
 HELP = """🤖 gmgn_trading_bot
 
-/add <CA> [SYMBOL] — tambah dan backfill 48 jam
+/add <CA> — simbol otomatis + backfill 48 jam
 /remove <CA> — hapus token dan datanya
 /list — watchlist + tombol hapus
 /pause <CA> — jeda tanpa menghapus data
@@ -92,10 +92,12 @@ class TelegramController(threading.Thread):
         args = parts[1:]
         try:
             if command == "/add":
-                if not args or not _valid_mint(args[0]):
-                    self.notifier.send_text("Format: /add <MINT_SOLANA> [SYMBOL]")
+                if len(args) != 1 or not _valid_mint(args[0]):
+                    self.notifier.send_text("Format: /add <MINT_SOLANA>\nSimbol akan diambil otomatis dari GMGN.")
                     return
-                mint, symbol = args[0], args[1] if len(args) > 1 else args[0][:6]
+                mint = args[0]
+                self.notifier.send_text("🔎 Mengambil informasi token dari GMGN…")
+                symbol = self.monitor.resolve_symbol(mint)
                 self.state.add_watch(mint, symbol)
                 self.notifier.send_text(f"✅ {symbol} ditambahkan. Backfill raw trades 48 jam dimulai pada siklus berikutnya.")
             elif command == "/remove":
@@ -134,7 +136,7 @@ class TelegramController(threading.Thread):
     def _send_list(self) -> None:
         rows = self.state.list_watchlist()
         if not rows:
-            self.notifier.send_text("Watchlist kosong. Gunakan /add <CA> [SYMBOL]")
+            self.notifier.send_text("Watchlist kosong. Gunakan /add <CA>; simbol diambil otomatis.")
             return
         self.notifier.send_text(f"📋 Watchlist: {len(rows)} token")
         for row in rows:

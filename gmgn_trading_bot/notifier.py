@@ -82,11 +82,20 @@ class TelegramNotifier:
 
     def set_commands(self) -> None:
         commands = [
-            {"command": "add", "description": "Tambah CA ke watchlist"},
+            {"command": "add", "description": "Tambah CA dan ambil simbol otomatis"},
+            {"command": "remove", "description": "Hapus CA dan raw datanya"},
             {"command": "list", "description": "Watchlist dan tombol hapus"},
+            {"command": "pause", "description": "Jeda monitoring satu CA"},
+            {"command": "resume", "description": "Aktifkan kembali satu CA"},
+            {"command": "refresh", "description": "Backfill ulang 48 jam satu CA"},
             {"command": "levels", "description": "Level SMART SEROK aktif"},
             {"command": "status", "description": "Status bot dan provider"},
-            {"command": "refresh", "description": "Backfill ulang satu CA"},
-            {"command": "help", "description": "Daftar command"},
+            {"command": "test", "description": "Tes koneksi Telegram"},
+            {"command": "help", "description": "Bantuan seluruh command"},
         ]
         self._call("setMyCommands", {"commands": json.dumps(commands, separators=(",", ":"))})
+        if self.chat_id:
+            self._call("setChatMenuButton", {
+                "chat_id": self.chat_id,
+                "menu_button": json.dumps({"type": "commands"}, separators=(",", ":")),
+            })
