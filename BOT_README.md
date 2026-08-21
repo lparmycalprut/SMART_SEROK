@@ -29,10 +29,13 @@ copy config.example.toml config.toml
 copy bot.env.example bot.env
 notepad config.toml
 notepad bot.env
-python -m gmgn_trading_bot.cli --config config.toml --check-config
-python -m gmgn_trading_bot.cli --config config.toml --once
-python -m gmgn_trading_bot.cli --config config.toml
+bot --check-config
+bot --once
+bot
 ```
+
+`bot.bat` otomatis masuk ke folder instalasi, memilih `python`/`py`, dan memakai
+`config.toml`. Perintah panjang tetap dapat digunakan sebagai alternatif.
 
 Isi `bot.env` dengan API key, cookie GMGN lokal, dan Telegram. Jangan kirim
 nilainya ke chat atau memasukkannya ke source/ZIP.

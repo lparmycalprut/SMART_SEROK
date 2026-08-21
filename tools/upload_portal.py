@@ -149,6 +149,7 @@ BOT_FILES = [
     "config.example.toml",
     "bot.env.example",
     "update_from_zip.ps1",
+    "bot.bat",
     "gmgn_trading_bot/__init__.py",
     "gmgn_trading_bot/cli.py",
     "gmgn_trading_bot/config.py",
@@ -308,8 +309,8 @@ PAGE = """<!doctype html>
       1. Ekstrak ZIP dan buka folder <code>gmgn_trading_bot</code>
       2. Salin <code>config.example.toml</code> → <code>config.toml</code>, lalu edit watchlist
       3. Salin <code>bot.env.example</code> → <code>bot.env</code> dan isi secret; bot memuatnya otomatis di semua OS
-      4. Jalankan Linux/macOS: <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>
-      <br><b>VS Code / Command Prompt:</b> gunakan <code>python -m gmgn_trading_bot.cli --config config.toml --once</code>. Setup Telegram tanpa PowerShell: <code>--telegram-chats</code> lalu <code>--test-telegram</code>.
+      4. Jalankan di Windows: <code>bot</code> (tes sekali: <code>bot --once</code>)
+      <br><b>Linux/macOS:</b> gunakan <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>. Setup Telegram: <code>bot --telegram-chats</code> lalu <code>bot --test-telegram</code>.
       <br><b>Update aman:</b> jalankan <code>.\\update_from_zip.ps1 -ZipPath "...zip"</code>; <code>bot.env</code>, <code>config.toml</code>, dan database lokal tidak disentuh.
       <br><b>Auto-trade OFF.</b> Detail lengkap ada di <code>BOT_README.md</code>.
     </div>
