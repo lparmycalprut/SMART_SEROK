@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
+from gmgn_trading_bot.gmgn import GMGNClient
 from gmgn_trading_bot.models import Candle, WatchToken
 from gmgn_trading_bot.notifier import TelegramNotifier
 from gmgn_trading_bot.signals import detect_chart_signals
@@ -76,6 +77,21 @@ enabled = true
             with patch.dict(os.environ, {"GMGN_API_KEY": "test-key"}, clear=False):
                 config = load_config(path)
         self.assertEqual([token.symbol for token in config.watchlist], ["ACTIVE"])
+
+
+class GMGNClientTests(unittest.TestCase):
+    def test_server_date_corrects_expired_auth_clock(self):
+        client = GMGNClient("key")
+        with patch("gmgn_trading_bot.gmgn.time.time", return_value=900.0), patch(
+            "gmgn_trading_bot.gmgn.time.monotonic", side_effect=[50.0, 52.0]
+        ):
+            self.assertTrue(client._sync_clock_from_http_date("Thu, 01 Jan 1970 00:16:40 GMT"))
+            self.assertEqual(client.now_ms(), 1_002_000)
+
+    def test_rejects_implausible_server_date(self):
+        client = GMGNClient("key")
+        with patch("gmgn_trading_bot.gmgn.time.time", return_value=0.0):
+            self.assertFalse(client._sync_clock_from_http_date("Thu, 01 Jan 1971 00:00:00 GMT"))
 
 
 class TelegramTests(unittest.TestCase):

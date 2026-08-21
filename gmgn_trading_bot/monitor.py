@@ -31,7 +31,7 @@ class WatchlistMonitor:
                 LOG.error("%s (%s): %s", token.symbol, token.mint[:8], exc)
                 continue
 
-            now_ms = int(time.time() * 1000)
+            now_ms = self.client.now_ms()
             period_ms = resolution_seconds(self.config.resolution) * 1000
             grace_ms = self.config.close_grace_seconds * 1000
             closed = [c for c in candles if c.start_ms + period_ms + grace_ms <= now_ms]

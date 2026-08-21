@@ -1,4 +1,4 @@
-# gmgn_trading_bot — Chart Monitor v0.1.4
+# gmgn_trading_bot — Chart Monitor v0.1.5
 
 Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
 alert Telegram opsional.
@@ -170,6 +170,19 @@ WantedBy=multi-user.target
 
 GMGN OpenAPI hanya mendukung IPv4. Pastikan VPS memiliki koneksi keluar IPv4.
 `request_spacing_seconds` minimum 1 detik untuk menghormati rate limit default.
+
+### `AUTH_TIMESTAMP_EXPIRED`
+
+GMGN memvalidasi timestamp autentikasi dengan toleransi ketat. Mulai v0.1.5, bot
+membaca header waktu server GMGN, mengoreksi selisih jam secara internal, lalu
+mengulang request satu kali otomatis. Log koreksi akan terlihat seperti:
+
+```text
+jam komputer berbeda 12.0 detik dari server GMGN; bot memakai waktu server
+```
+
+Walaupun bot dapat mengoreksi otomatis, tetap aktifkan **Set time automatically**
+dan klik **Sync now** di Windows Settings → Time & language → Date & time.
 
 ## State dan deduplikasi
 
