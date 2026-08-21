@@ -3,9 +3,8 @@
   "tasks": [
     {
       "label": "Jalankan SMART SEROK Bot",
-      "type": "process",
-      "command": "${command:python.interpreterPath}",
-      "args": ["bot.py"],
+      "type": "shell",
+      "command": "python bot.py",
       "options": {"cwd": "${workspaceFolder}"},
       "isBackground": false,
       "problemMatcher": [],
@@ -18,9 +17,8 @@
     },
     {
       "label": "Tes konfigurasi SMART SEROK",
-      "type": "process",
-      "command": "${command:python.interpreterPath}",
-      "args": ["bot.py", "--check-config"],
+      "type": "shell",
+      "command": "python bot.py --check-config",
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
     }

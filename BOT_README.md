@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.1 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.2 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
