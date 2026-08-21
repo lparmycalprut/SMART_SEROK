@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.5 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.6 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
@@ -32,9 +32,9 @@ python bot.py --once
 python bot.py
 ```
 
-Mulai v0.2.5, ZIP update tidak berisi `bot.env`, `config.toml`, maupun kedua
-file contohnya. Gunakan file lokal yang sudah ada. Jangan ekstrak ZIP langsung
-menimpa instalasi; gunakan updater agar source saja yang diganti.
+Mulai v0.2.6, ZIP hanya berisi source bot dan tidak membawa `bot.env`,
+`config.toml`, file contoh, database, maupun updater PowerShell. Hentikan bot,
+lalu salin dan timpa source lama langsung dengan isi ZIP terbaru.
 
 Cara paling mudah di VS Code: tekan `Ctrl+Shift+B`, lalu pilih
 **Jalankan SMART SEROK Bot**. Launcher lama berbentuk `.bat` telah dihapus agar
@@ -78,13 +78,16 @@ dikirim. Alert baru dikirim satu kali per event.
 
 Hanya `TELEGRAM_CHAT_ID` pemilik yang dapat menjalankan command.
 
-## Update tanpa kehilangan lokal
+## Update langsung dari VS Code
 
-```bat
-powershell -ExecutionPolicy Bypass -File update_from_zip.ps1 -ZipPath "D:\Downloads\gmgn_trading_bot_vTERBARU.zip"
-```
+1. Hentikan bot dengan `Ctrl+C`.
+2. Ekstrak ZIP terbaru.
+3. Salin seluruh isi folder hasil ekstrak ke folder instalasi dan pilih
+   **Replace the files in the destination**.
+4. Jalankan kembali `python bot.py`.
 
-Updater mempertahankan `bot.env`, `config.toml`, dan `var/`.
+Karena file lokal dan database tidak ada di ZIP, proses timpa tidak menyentuh
+`bot.env`, `config.toml`, maupun `var/`.
 
 ## Tes
 
