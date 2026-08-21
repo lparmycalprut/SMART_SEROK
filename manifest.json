@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.12",
-  "description": "SMART SEROK v9.2.12 — satu tombol export; file ringkas (KB) berisi bars + level/sinyal + jejak forensik wick.",
+  "version": "9.2.13",
+  "description": "SMART SEROK v9.2.13 — satu tombol export; file ringkas (KB) berisi bars + level/sinyal + jejak forensik wick.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

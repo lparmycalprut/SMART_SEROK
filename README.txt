@@ -408,3 +408,20 @@ nuansa warnanya tetap satu keluarga tapi tetap nyaman dibaca.
 Candle raksasa memakai warna yang sama untuk isian dan teks.
 
 Regresi 17 tes (9 lama + 8 baru soal warna/kontras): LULUS semua.
+
+================================================================
+NAMA KONSTANTA & LABEL TABEL CANDLE (v9.2.13)
+================================================================
+MASALAH
+Tabel candle terakhir di R MONITOR cuma menampilkan 12 baris padahal
+datanya bisa 48 jam. Angka 12 itu hardcoded (slice(-12)) tanpa nama,
+dan tabelnya tidak menuliskan jumlahnya — harus dihitung baris per
+baris untuk sadar kenapa tabel tampak lebih pendek dari datanya.
+
+PERBAIKAN
+  - slice(-12) diberi nama konstanta R_MON_TABLE_BARS = 12
+    (komentar: candle terakhir yang masuk tabel).
+  - Tabel kini berjudul kecil "12 candle terakhir" yang menginterpolasi
+    konstanta, jadi jumlahnya langsung terbaca tanpa dihitung manual.
+
+Nilai tetap 12 — ini murni pemberian nama & label, bukan perubahan perilaku.

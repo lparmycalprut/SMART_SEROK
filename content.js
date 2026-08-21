@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.12
+ * SMART SEROK — v9.2.13
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -39,7 +39,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.12";             // dipakai di header file export
+const EXT_VER = "9.2.13";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -100,6 +100,7 @@ const EXT_VER = "9.2.12";             // dipakai di header file export
   //   1. Saat harga bergerak — apakah ada perlawanan? (R kecil = tembus bersih)
   //   2. Saat harga di support/resistance — apakah pihak lawan masuk? (R melonjak)
   const R_MON_BARS = 40;                // candle terakhir yang ditampilkan
+  const R_MON_TABLE_BARS = 12;          // candle terakhir yang masuk tabel
   // |R| dinormalisasi ke median |R| klaster aktif, karena skala R berbeda tiap
   // token/likuiditas. Angka mentah tidak bisa dibandingkan lintas token.
   const R_BAND_FREE = 0.5;              // < 0,5× acuan → BEBAS (tanpa perlawanan)
@@ -1760,7 +1761,7 @@ const EXT_VER = "9.2.12";             // dipakai di header file export
     s += `<text x="${padL}" y="${H - 4}" fill="#475569" font-size="8">tinggi batang = |R| relatif terhadap median klaster · tembok biasa = warna kalem · RAKSASA = warna menyala + batang lebih lebar (hanya candle yang lolos ambang sinyal) · ▲▼ = harga bergerak ≥${R_MON_MOVE_PCT}% · batang pudar = candle berjalan</text>`;
 
     // ---- tabel candle terakhir ----
-    const tail = data.slice(-12);
+    const tail = data.slice(-R_MON_TABLE_BARS);
     const rows = tail.slice().reverse().map(b => {
       const gi = data.indexOf(b);
       const r = readR(b, base, gi > 0 ? data[gi - 1] : null);
@@ -1777,6 +1778,7 @@ const EXT_VER = "9.2.12";             // dipakai di header file export
 
     container.innerHTML = head
       + `<svg width="100%" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;">${s}</svg>`
+      + `<div class="gmgn-rm-base" style="margin:8px 2px 0;">${R_MON_TABLE_BARS} candle terakhir</div>`
       + `<table class="gmgn-rm-tbl"><thead><tr>
            <th>candle</th><th>harga</th><th>R</th><th>rasio</th><th>kondisi</th><th>bacaan</th>
          </tr></thead><tbody>${rows}</tbody></table>`;
@@ -2203,7 +2205,7 @@ const EXT_VER = "9.2.12";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.12</span>
+        <span class="t">🥄 SMART SEROK v9.2.13</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
