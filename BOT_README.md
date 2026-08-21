@@ -1,4 +1,4 @@
-# gmgn_trading_bot — Chart Monitor v0.1.3
+# gmgn_trading_bot — Chart Monitor v0.1.4
 
 Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
 alert Telegram opsional.
@@ -39,7 +39,44 @@ tidak boleh ditulis ke `config.example.toml`, source code, log, atau Telegram.
 > Karena API key pernah ditempel di percakapan, disarankan membuat/merotasi key
 > baru di https://gmgn.ai/ai sebelum deployment produksi.
 
-## Windows PowerShell
+## Windows + VS Code (tanpa PowerShell)
+
+Di VS Code tekan `Ctrl+Shift+P` → **Terminal: Select Default Profile** → pilih
+**Command Prompt**, lalu buka terminal baru. Jalankan:
+
+```bat
+cd /d D:\gmgn_trading_bot
+copy config.example.toml config.toml
+copy bot.env.example bot.env
+notepad config.toml
+notepad bot.env
+python -m gmgn_trading_bot.cli --config config.toml --check-config
+python -m gmgn_trading_bot.cli --config config.toml --once
+```
+
+Untuk menemukan chat ID tanpa perintah khusus PowerShell:
+
+1. Buka bot di Telegram, tekan **Start**, lalu kirim `/start`.
+2. Jalankan:
+
+```bat
+python -m gmgn_trading_bot.cli --telegram-chats
+```
+
+3. Salin `CHAT_ID` yang tampil ke `TELEGRAM_CHAT_ID` dalam `bot.env`.
+4. Tes pengiriman:
+
+```bat
+python -m gmgn_trading_bot.cli --config config.toml --test-telegram
+```
+
+5. Jalankan monitor:
+
+```bat
+python -m gmgn_trading_bot.cli --config config.toml
+```
+
+## Windows PowerShell (alternatif)
 
 PowerShell tidak memakai `\` untuk menyambung perintah seperti Bash. Cara paling
 aman adalah menjalankan perintah dalam satu baris:

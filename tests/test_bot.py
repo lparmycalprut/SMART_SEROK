@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
 from gmgn_trading_bot.models import Candle, WatchToken
+from gmgn_trading_bot.notifier import TelegramNotifier
 from gmgn_trading_bot.signals import detect_chart_signals
 from gmgn_trading_bot.state import StateStore
 
@@ -75,6 +76,15 @@ enabled = true
             with patch.dict(os.environ, {"GMGN_API_KEY": "test-key"}, clear=False):
                 config = load_config(path)
         self.assertEqual([token.symbol for token in config.watchlist], ["ACTIVE"])
+
+
+class TelegramTests(unittest.TestCase):
+    def test_recent_chats_extracts_private_message(self):
+        notifier = TelegramNotifier("token", None)
+        updates = [{"message": {"chat": {"id": 6743, "type": "private", "username": "tester"}, "text": "/start"}}]
+        with patch.object(notifier, "_call", return_value=updates):
+            chats = notifier.recent_chats()
+        self.assertEqual(chats, [{"id": "6743", "type": "private", "name": "tester", "text": "/start"}])
 
 
 class StateTests(unittest.TestCase):

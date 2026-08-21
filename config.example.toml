@@ -1,5 +1,5 @@
 # ================================================================
-# gmgn_trading_bot — TEMPLATE KONFIGURASI LENGKAP v0.1.3
+# gmgn_trading_bot — TEMPLATE KONFIGURASI LENGKAP v0.1.4
 # ================================================================
 # Salin file ini menjadi config.toml:
 #   cp config.example.toml config.toml
@@ -95,7 +95,7 @@ enabled = false
 # enabled = true
 
 # ================================================================
-# BELUM TERSEDIA DI v0.1.3
+# BELUM TERSEDIA DI v0.1.4
 # ================================================================
 # - Discovery otomatis dari trending GMGN
 # - Sinyal resistance/support/retest berbasis CVD dan R
