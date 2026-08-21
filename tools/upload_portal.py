@@ -149,7 +149,8 @@ BOT_FILES = [
     "config.example.toml",
     "bot.env.example",
     "update_from_zip.ps1",
-    "bot.bat",
+    "bot.py",
+    ".vscode/tasks.json",
     "gmgn_trading_bot/__init__.py",
     "gmgn_trading_bot/cli.py",
     "gmgn_trading_bot/config.py",
@@ -163,7 +164,7 @@ BOT_FILES = [
     "gmgn_trading_bot/telegram_control.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.2.0"
+BOT_VERSION = "0.2.1"
 
 
 def ext_version():
@@ -309,8 +310,8 @@ PAGE = """<!doctype html>
       1. Ekstrak ZIP dan buka folder <code>gmgn_trading_bot</code>
       2. Salin <code>config.example.toml</code> → <code>config.toml</code>, lalu edit watchlist
       3. Salin <code>bot.env.example</code> → <code>bot.env</code> dan isi secret; bot memuatnya otomatis di semua OS
-      4. Jalankan di Windows: <code>bot</code> (tes sekali: <code>bot --once</code>)
-      <br><b>Linux/macOS:</b> gunakan <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>. Setup Telegram: <code>bot --telegram-chats</code> lalu <code>bot --test-telegram</code>.
+      4. Di VS Code tekan <code>Ctrl+Shift+B</code> → <code>Jalankan SMART SEROK Bot</code>, atau jalankan <code>python bot.py</code>
+      <br><b>Tes:</b> gunakan <code>python bot.py --once</code>. Launcher memakai Python murni; tidak ada file BAT/EXE. Setup Telegram: <code>python bot.py --telegram-chats</code> lalu <code>python bot.py --test-telegram</code>.
       <br><b>Update aman:</b> jalankan <code>.\\update_from_zip.ps1 -ZipPath "...zip"</code>; <code>bot.env</code>, <code>config.toml</code>, dan database lokal tidak disentuh.
       <br><b>Auto-trade OFF.</b> Detail lengkap ada di <code>BOT_README.md</code>.
     </div>

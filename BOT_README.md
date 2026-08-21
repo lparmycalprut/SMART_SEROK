@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.0 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.1 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
@@ -29,13 +29,14 @@ copy config.example.toml config.toml
 copy bot.env.example bot.env
 notepad config.toml
 notepad bot.env
-bot --check-config
-bot --once
-bot
+python bot.py --check-config
+python bot.py --once
+python bot.py
 ```
 
-`bot.bat` otomatis masuk ke folder instalasi, memilih `python`/`py`, dan memakai
-`config.toml`. Perintah panjang tetap dapat digunakan sebagai alternatif.
+Cara paling mudah di VS Code: tekan `Ctrl+Shift+B`, lalu pilih
+**Jalankan SMART SEROK Bot**. Launcher lama berbentuk `.bat` telah dihapus agar
+tidak memicu deteksi heuristik antivirus.
 
 Isi `bot.env` dengan API key, cookie GMGN lokal, dan Telegram. Jangan kirim
 nilainya ke chat atau memasukkannya ke source/ZIP.
