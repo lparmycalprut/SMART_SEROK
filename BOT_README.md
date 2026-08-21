@@ -1,48 +1,27 @@
-# gmgn_trading_bot — Chart Monitor v0.1.5
+# gmgn_trading_bot v0.2.0 — SMART SEROK Level Engine
 
-Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
-alert Telegram opsional.
+Bot 24/7 Solana dengan empat sinyal saja:
 
-## Batasan versi ini
+1. `RESISTANCE TERBENTUK`
+2. `SUPPORT TERBENTUK`
+3. `RETEST RESISTANCE — KEMUNGKINAN BREAKOUT`
+4. `RETEST SUPPORT — KEMUNGKINAN BREAKDOWN`
 
-Versi pertama hanya membaca **OHLCV K-line resmi GMGN**. Sinyal sementara:
+`CHART_BREAKOUT` dan `CHART_BREAKDOWN` telah dihapus. Auto-trade selalu OFF.
 
-- `CHART_BREAKOUT`: close candle selesai menembus high N candle sebelumnya.
-- `CHART_BREAKDOWN`: close candle selesai menembus low N candle sebelumnya.
-- Keduanya dapat mensyaratkan rasio volume dan minimum perubahan candle.
+## Sumber data
 
-Ini **bukan** empat sinyal Level Engine ekstensi. K-line tidak memiliki buy/sell
-flow, maker, dan trade SOL sehingga `cvd_clean`, signed R, resistance/support
-terbukti, dan retest tanpa perlawanan belum bisa dihitung secara identik.
+- GMGN OpenAPI: metadata dan market-cap context.
+- GMGN web `token_trades`: raw buy/sell, SOL, maker, harga, tx hash, tags.
+- SQLite: watchlist, raw trades, deduplikasi, dan state.
 
-Auto-trade belum ada dan selalu **OFF**.
+Raw trades memakai endpoint web yang sama dengan ekstensi, tetapi bukan OpenAPI
+publik. Cookie dapat kedaluwarsa. Bot akan melaporkan error lewat `/status`.
 
-## Instalasi
+## Setup Windows + VS Code
 
-Python 3.11+ cukup; bot tidak membutuhkan package pihak ketiga.
-
-```bash
-cp config.example.toml config.toml
-cp bot.env.example bot.env
-chmod 600 bot.env
-
-# Edit watchlist di config.toml dan isi secret di bot.env.
-# bot.env dimuat otomatis oleh bot pada semua OS.
-python -m gmgn_trading_bot.cli --config config.toml --check-config
-python -m gmgn_trading_bot.cli --config config.toml --once
-python -m gmgn_trading_bot.cli --config config.toml
-```
-
-`config.toml`, `bot.env`, `.env`, dan database runtime diabaikan Git. API key
-tidak boleh ditulis ke `config.example.toml`, source code, log, atau Telegram.
-
-> Karena API key pernah ditempel di percakapan, disarankan membuat/merotasi key
-> baru di https://gmgn.ai/ai sebelum deployment produksi.
-
-## Windows + VS Code (tanpa PowerShell)
-
-Di VS Code tekan `Ctrl+Shift+P` → **Terminal: Select Default Profile** → pilih
-**Command Prompt**, lalu buka terminal baru. Jalankan:
+Pilih VS Code → `Ctrl+Shift+P` → **Terminal: Select Default Profile** →
+**Command Prompt**. Kemudian:
 
 ```bat
 cd /d D:\gmgn_trading_bot
@@ -52,146 +31,57 @@ notepad config.toml
 notepad bot.env
 python -m gmgn_trading_bot.cli --config config.toml --check-config
 python -m gmgn_trading_bot.cli --config config.toml --once
-```
-
-Untuk menemukan chat ID tanpa perintah khusus PowerShell:
-
-1. Buka bot di Telegram, tekan **Start**, lalu kirim `/start`.
-2. Jalankan:
-
-```bat
-python -m gmgn_trading_bot.cli --telegram-chats
-```
-
-3. Salin `CHAT_ID` yang tampil ke `TELEGRAM_CHAT_ID` dalam `bot.env`.
-4. Tes pengiriman:
-
-```bat
-python -m gmgn_trading_bot.cli --config config.toml --test-telegram
-```
-
-5. Jalankan monitor:
-
-```bat
 python -m gmgn_trading_bot.cli --config config.toml
 ```
 
-## Windows PowerShell (alternatif)
+Isi `bot.env` dengan API key, cookie GMGN lokal, dan Telegram. Jangan kirim
+nilainya ke chat atau memasukkannya ke source/ZIP.
 
-PowerShell tidak memakai `\` untuk menyambung perintah seperti Bash. Cara paling
-aman adalah menjalankan perintah dalam satu baris:
+## Cara mengambil cookie GMGN
 
-```powershell
-Copy-Item config.example.toml config.toml
-Copy-Item bot.env.example bot.env
-notepad config.toml
-notepad bot.env
-python -m gmgn_trading_bot.cli --config config.toml --check-config
-python -m gmgn_trading_bot.cli --config config.toml --once
-python -m gmgn_trading_bot.cli --config config.toml
-```
+1. Login GMGN di browser.
+2. Buka halaman token → DevTools (`F12`) → tab **Network**.
+3. Cari request `token_trades`.
+4. Buka request → **Request Headers** → salin nilai header `Cookie` saja.
+5. Isi satu baris `GMGN_WEB_COOKIE=...` di `bot.env`.
 
-Bot memuat `bot.env` secara otomatis. Isi API key dan Telegram di file tersebut;
-tidak perlu menjalankan `$env:...` setiap membuka PowerShell baru. File `bot.env`
-diabaikan Git dan **tidak dimasukkan ke ZIP hasil portal** agar secret tidak bocor.
+Cookie adalah kredensial sesi. Jika bocor atau error 401/403, logout/login GMGN
+dan ganti nilainya.
 
-### Update versi tanpa kehilangan secret/config
+## Backfill dan Level Engine
 
-Simpan ZIP versi terbaru di komputer, lalu jalankan dari folder bot lama:
+Saat token baru ditambahkan, bot mengambil raw trades 48 jam, membentuk candle
+1H, menjalankan wash/MEV filtering, CVD bersih, signed R, pembuktian maksimal 12
+candle, arming 2%, dan retest garis ±0,5%. Sinyal historis disimpan tetapi tidak
+dikirim. Alert baru dikirim satu kali per event.
 
-```powershell
-.\update_from_zip.ps1 -ZipPath "D:\Downloads\gmgn_trading_bot_vTERBARU.zip"
-```
-
-Updater mengganti source terbaru tetapi selalu mempertahankan tiga item lokal:
-
-- `bot.env` — API key dan Telegram
-- `config.toml` — watchlist dan setting
-- `var/` — database deduplikasi alert
-
-Jadi secret tidak perlu dimasukkan ke ZIP dan tidak perlu diketik ulang. Jika
-PowerShell memblokir script lokal, jalankan satu kali untuk proses tersebut:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-```
-
-Jika ingin beberapa baris, gunakan backtick PowerShell (`` ` ``), bukan
-backslash. Backtick harus menjadi karakter terakhir pada baris—jangan beri spasi
-setelahnya:
-
-```powershell
-python -m gmgn_trading_bot.cli `
-  --config config.toml `
-  --once
-```
-
-Sebagai alternatif, environment PowerShell dapat dipakai untuk override sementara
-(nilainya menang atas `bot.env`), tetapi hanya aktif di terminal tersebut:
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "..."
-$env:TELEGRAM_CHAT_ID = "..."
-```
-
-## Telegram (Linux/macOS, opsional)
-
-```bash
-export TELEGRAM_BOT_TOKEN='...'
-export TELEGRAM_CHAT_ID='...'
-python -m gmgn_trading_bot.cli --config config.toml
-```
-
-Tanpa dua environment variable tersebut, alert tetap dicatat di log console.
-Bot tidak akan menerima konfigurasi Telegram yang hanya terisi salah satu.
-
-## Operasi 24/7 dengan systemd
-
-Contoh unit (sesuaikan path dan user):
-
-```ini
-[Unit]
-Description=SMART SEROK GMGN monitor
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=smartserok
-WorkingDirectory=/opt/smart-serok
-EnvironmentFile=/etc/gmgn-trading-bot.env
-ExecStart=/usr/bin/python3 -m gmgn_trading_bot.cli --config /etc/gmgn-trading-bot.toml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-GMGN OpenAPI hanya mendukung IPv4. Pastikan VPS memiliki koneksi keluar IPv4.
-`request_spacing_seconds` minimum 1 detik untuk menghormati rate limit default.
-
-### `AUTH_TIMESTAMP_EXPIRED`
-
-GMGN memvalidasi timestamp autentikasi dengan toleransi ketat. Mulai v0.1.5, bot
-membaca header waktu server GMGN, mengoreksi selisih jam secara internal, lalu
-mengulang request satu kali otomatis. Log koreksi akan terlihat seperti:
+## Telegram control
 
 ```text
-jam komputer berbeda 12.0 detik dari server GMGN; bot memakai waktu server
+/add <CA> [SYMBOL]  tambah + jadwalkan backfill 48 jam
+/remove <CA>        hapus token dan raw data
+/list               watchlist + tombol 🗑 per CA
+/pause <CA>         jeda tanpa hapus
+/resume <CA>        aktifkan
+/refresh <CA>       fetch ulang 48 jam
+/levels             level aktif
+/status             kesehatan bot/provider
+/test               tes Telegram
+/help               bantuan
 ```
 
-Walaupun bot dapat mengoreksi otomatis, tetap aktifkan **Set time automatically**
-dan klik **Sync now** di Windows Settings → Time & language → Date & time.
+Hanya `TELEGRAM_CHAT_ID` pemilik yang dapat menjalankan command.
 
-## State dan deduplikasi
+## Update tanpa kehilangan lokal
 
-SQLite menyimpan candle terakhir dan event yang sudah dikirim. Restart bot tidak
-mengirim ulang alert yang sama. Pada start pertama, default
-`alert_on_startup=false` melakukan warm-up tanpa mengirim sinyal historis.
+```bat
+powershell -ExecutionPolicy Bypass -File update_from_zip.ps1 -ZipPath "D:\Downloads\gmgn_trading_bot_vTERBARU.zip"
+```
+
+Updater mempertahankan `bot.env`, `config.toml`, dan `var/`.
 
 ## Tes
 
-```bash
+```bat
 python -m unittest discover -s tests -v
 ```

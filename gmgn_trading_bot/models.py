@@ -68,13 +68,3 @@ class Candle:
         if min(o, h, low, close) <= 0 or low > h:
             raise ValueError("invalid GMGN candle prices")
         return cls(start_ms, o, h, low, close, volume, amount)
-
-
-@dataclass(frozen=True, slots=True)
-class ChartSignal:
-    event_id: str
-    mint: str
-    symbol: str
-    kind: str
-    candle: Candle
-    message: str

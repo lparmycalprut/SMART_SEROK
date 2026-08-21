@@ -12,16 +12,14 @@ from .models import WatchToken
 class BotConfig:
     api_key: str
     api_host: str
+    web_cookie: str
+    web_host: str
     chain: str
     resolution: str
     poll_seconds: int
     request_spacing_seconds: float
-    history_bars: int
+    backfill_hours: int
     close_grace_seconds: int
-    breakout_lookback: int
-    min_volume_ratio: float
-    min_candle_move_pct: float
-    alert_on_startup: bool
     db_path: Path
     telegram_token: str | None
     telegram_chat_id: str | None
@@ -33,11 +31,6 @@ class ConfigError(ValueError):
 
 
 def load_env_file(path: str | Path) -> bool:
-    """Load a simple KEY=VALUE file without overriding existing environment.
-
-    This intentionally supports the subset used by bot.env and works equally on
-    Windows, Linux, and macOS without a third-party dotenv dependency.
-    """
     env_path = Path(path)
     if not env_path.is_file():
         return False
@@ -50,8 +43,7 @@ def load_env_file(path: str | Path) -> bool:
         if "=" not in line:
             raise ConfigError(f"{env_path}:{line_number}: format environment harus KEY=VALUE")
         key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
+        key, value = key.strip(), value.strip()
         if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
             raise ConfigError(f"{env_path}:{line_number}: nama environment tidak valid: {key!r}")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
@@ -70,62 +62,38 @@ def load_config(path: str | Path) -> BotConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"TOML tidak valid: {exc}") from exc
 
-    gmgn = raw.get("gmgn", {})
-    monitor = raw.get("monitor", {})
-    signal = raw.get("chart_signal", {})
-    storage = raw.get("storage", {})
-    telegram = raw.get("telegram", {})
-
+    gmgn, monitor, storage = raw.get("gmgn", {}), raw.get("monitor", {}), raw.get("storage", {})
     api_key = os.getenv("GMGN_API_KEY", "").strip()
     if not api_key:
-        raise ConfigError("environment variable GMGN_API_KEY belum diisi")
-
-    tokens: list[WatchToken] = []
-    for index, item in enumerate(raw.get("watchlist", []), start=1):
-        is_enabled = bool(item.get("enabled", True))
-        # Blok contoh yang dinonaktifkan boleh dibiarkan kosong. Ini memudahkan
-        # user menyiapkan slot watchlist tanpa membuat seluruh config gagal.
-        if not is_enabled:
-            continue
-        mint = str(item.get("mint", "")).strip()
-        if not (32 <= len(mint) <= 44) or not mint.isalnum():
-            raise ConfigError(
-                f"watchlist #{index} aktif tetapi mint Solana tidak valid: {mint!r}. "
-                "Isi mint yang benar, hapus bloknya, atau set enabled = false"
-            )
-        tokens.append(WatchToken(mint, str(item.get("symbol") or mint[:6]), True))
-    enabled = tuple(tokens)
-    if not enabled:
-        raise ConfigError("watchlist aktif masih kosong")
-
-    resolution = str(monitor.get("resolution", "1h"))
-    if resolution not in {"30s", "1m", "5m", "15m", "1h", "4h", "1d"}:
-        raise ConfigError(f"resolution tidak didukung: {resolution}")
-
+        raise ConfigError("GMGN_API_KEY belum diisi di bot.env")
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
     tg_chat = os.getenv("TELEGRAM_CHAT_ID", "").strip() or None
     if bool(tg_token) != bool(tg_chat):
         raise ConfigError("TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID harus diisi berpasangan")
 
+    tokens: list[WatchToken] = []
+    for index, item in enumerate(raw.get("watchlist", []), start=1):
+        if not bool(item.get("enabled", True)):
+            continue
+        mint = str(item.get("mint", "")).strip()
+        if not (32 <= len(mint) <= 44) or not mint.isalnum():
+            raise ConfigError(f"watchlist #{index} aktif tetapi mint Solana tidak valid: {mint!r}")
+        tokens.append(WatchToken(mint, str(item.get("symbol") or mint[:6]), True))
+
+    resolution = str(monitor.get("resolution", "1h"))
+    if resolution != "1h":
+        raise ConfigError("Level Engine v0.2 hanya mendukung resolution = \"1h\"")
     return BotConfig(
-        api_key=api_key,
-        api_host=str(gmgn.get("host", "https://openapi.gmgn.ai")).rstrip("/"),
-        chain=str(gmgn.get("chain", "sol")),
-        resolution=resolution,
-        poll_seconds=max(15, int(monitor.get("poll_seconds", 60))),
-        request_spacing_seconds=max(1.0, float(monitor.get("request_spacing_seconds", 1.1))),
-        history_bars=max(10, int(monitor.get("history_bars", 80))),
-        close_grace_seconds=max(0, int(monitor.get("close_grace_seconds", 15))),
-        breakout_lookback=max(3, int(signal.get("breakout_lookback", 20))),
-        min_volume_ratio=max(0.0, float(signal.get("min_volume_ratio", 1.5))),
-        min_candle_move_pct=max(0.0, float(signal.get("min_candle_move_pct", 3.0))),
-        alert_on_startup=bool(monitor.get("alert_on_startup", False)),
-        db_path=Path(str(storage.get("sqlite_path", "var/smart_serok.db"))),
-        telegram_token=tg_token,
-        telegram_chat_id=tg_chat,
-        watchlist=enabled,
+        api_key, str(gmgn.get("host", "https://openapi.gmgn.ai")).rstrip("/"),
+        os.getenv("GMGN_WEB_COOKIE", "").strip(), str(gmgn.get("web_host", "https://gmgn.ai")).rstrip("/"),
+        "sol", resolution, max(30, int(monitor.get("poll_seconds", 60))),
+        max(1.0, float(monitor.get("request_spacing_seconds", 1.1))),
+        max(48, int(monitor.get("backfill_hours", 48))),
+        max(0, int(monitor.get("close_grace_seconds", 15))),
+        Path(str(storage.get("sqlite_path", "var/gmgn_trading_bot.db"))),
+        tg_token, tg_chat, tuple(tokens),
     )
 
 
 def resolution_seconds(value: str) -> int:
-    return {"30s": 30, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}[value]
+    return {"1h": 3600}[value]

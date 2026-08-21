@@ -7,8 +7,6 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from .models import ChartSignal
-
 LOG = logging.getLogger(__name__)
 
 
@@ -21,7 +19,7 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def _call(self, method: str, payload: dict[str, str] | None = None) -> Any:
+    def _call(self, method: str, payload: dict[str, Any] | None = None) -> Any:
         if not self.token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN belum diisi di bot.env")
         data = urllib.parse.urlencode(payload).encode() if payload is not None else None
@@ -50,8 +48,12 @@ class TelegramNotifier:
         result = self._call("getMe")
         return result if isinstance(result, dict) else {}
 
+    def get_updates(self, offset: int = 0, timeout: int = 5) -> list[dict[str, Any]]:
+        result = self._call("getUpdates", {"offset": str(offset), "timeout": str(timeout)})
+        return result if isinstance(result, list) else []
+
     def recent_chats(self) -> list[dict[str, str]]:
-        result = self._call("getUpdates")
+        result = self.get_updates(timeout=0)
         chats: dict[str, dict[str, str]] = {}
         for update in result if isinstance(result, list) else []:
             event = update.get("message") or update.get("channel_post") or update.get("edited_message") or {}
@@ -67,24 +69,24 @@ class TelegramNotifier:
             }
         return list(chats.values())
 
-    def send_text(self, text: str) -> None:
+    def send_text(self, text: str, reply_markup: dict[str, Any] | None = None) -> None:
         if not self.chat_id:
             raise RuntimeError("TELEGRAM_CHAT_ID belum diisi di bot.env")
-        self._call("sendMessage", {
-            "chat_id": self.chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        })
+        payload = {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": "true"}
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup, separators=(",", ":"))
+        self._call("sendMessage", payload)
 
-    def send_signal(self, signal: ChartSignal, resolution: str) -> None:
-        icon = "🔵" if signal.kind == "CHART_BREAKOUT" else "🟠"
-        text = (
-            f"{icon} {signal.kind.replace('_', ' ')}\n\n"
-            f"Token: {signal.symbol}\nMint: {signal.mint}\nTF: {resolution}\n"
-            f"Close: {signal.candle.close:.12g}\n{signal.message}\n\n"
-            "Mode: OHLCV chart-only · bukan sinyal R/CVD SMART SEROK\n"
-            "Auto-trade: OFF"
-        )
-        LOG.warning("SIGNAL %s %s — %s", signal.symbol, signal.kind, signal.message)
-        if self.enabled:
-            self.send_text(text)
+    def answer_callback(self, callback_id: str, text: str) -> None:
+        self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+
+    def set_commands(self) -> None:
+        commands = [
+            {"command": "add", "description": "Tambah CA ke watchlist"},
+            {"command": "list", "description": "Watchlist dan tombol hapus"},
+            {"command": "levels", "description": "Level SMART SEROK aktif"},
+            {"command": "status", "description": "Status bot dan provider"},
+            {"command": "refresh", "description": "Backfill ulang satu CA"},
+            {"command": "help", "description": "Daftar command"},
+        ]
+        self._call("setMyCommands", {"commands": json.dumps(commands, separators=(",", ":"))})

@@ -1,15 +1,22 @@
+import io
+import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
+from gmgn_trading_bot.engine import (
+    Bar, SIG_RESISTANCE, SIG_RETEST_RES, SIG_RETEST_SUP, SIG_SUPPORT, scan_smart_serok,
+)
 from gmgn_trading_bot.gmgn import GMGNClient
+from gmgn_trading_bot.gmgn_web import GMGNWebClient, normalize_trade
 from gmgn_trading_bot.models import Candle, WatchToken
 from gmgn_trading_bot.notifier import TelegramNotifier
-from gmgn_trading_bot.signals import detect_chart_signals
 from gmgn_trading_bot.state import StateStore
+from gmgn_trading_bot.telegram_control import TelegramController
 
 
 class CandleTests(unittest.TestCase):
@@ -29,42 +36,13 @@ class CandleTests(unittest.TestCase):
         self.assertEqual(candle.start_wib, "01-01-1970 07:00 WIB")
 
 
-class SignalTests(unittest.TestCase):
-    def test_breakout(self):
-        previous = [Candle(i * 1000, 10, 11, 9, 10, 100, 0) for i in range(20)]
-        latest = Candle(21_000, 10, 13, 9.8, 12, 200, 0)
-        signals = detect_chart_signals(
-            WatchToken("A" * 32, "TEST"), previous + [latest],
-            lookback=20, min_volume_ratio=1.5, min_move_pct=3,
-        )
-        self.assertEqual([s.kind for s in signals], ["CHART_BREAKOUT"])
-
-    def test_no_signal_without_volume(self):
-        previous = [Candle(i * 1000, 10, 11, 9, 10, 100, 0) for i in range(20)]
-        latest = Candle(21_000, 10, 13, 9.8, 12, 120, 0)
-        self.assertEqual(detect_chart_signals(
-            WatchToken("A" * 32, "TEST"), previous + [latest],
-            lookback=20, min_volume_ratio=1.5, min_move_pct=3,
-        ), [])
-
-
 class ConfigTests(unittest.TestCase):
-    def test_env_file_loads_secrets_without_overriding_process(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "bot.env"
-            path.write_text('GMGN_API_KEY="from-file"\nTELEGRAM_CHAT_ID=-123\n')
-            with patch.dict(os.environ, {"GMGN_API_KEY": "from-process"}, clear=True):
-                self.assertTrue(load_env_file(path))
-                self.assertEqual(os.environ["GMGN_API_KEY"], "from-process")
-                self.assertEqual(os.environ["TELEGRAM_CHAT_ID"], "-123")
-
-    def test_disabled_empty_watchlist_slot_is_ignored(self):
-        text = '''
+    def test_env_file_and_disabled_empty_slot(self):
+        config_text = '''
 [monitor]
 resolution = "1h"
 [[watchlist]]
 mint = ""
-symbol = "NANTI"
 enabled = false
 [[watchlist]]
 mint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -72,11 +50,83 @@ symbol = "ACTIVE"
 enabled = true
 '''
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            path.write_text(text)
-            with patch.dict(os.environ, {"GMGN_API_KEY": "test-key"}, clear=False):
-                config = load_config(path)
+            env_path = Path(directory) / "bot.env"
+            env_path.write_text("GMGN_API_KEY=from-file\nGMGN_WEB_COOKIE=session=value\n")
+            config_path = Path(directory) / "config.toml"
+            config_path.write_text(config_text)
+            with patch.dict(os.environ, {}, clear=True):
+                load_env_file(env_path)
+                config = load_config(config_path)
+        self.assertEqual(config.web_cookie, "session=value")
         self.assertEqual([token.symbol for token in config.watchlist], ["ACTIVE"])
+
+
+class SmartSerokEngineTests(unittest.TestCase):
+    def test_resistance_and_retest_are_detected(self):
+        def bar(i, close, high, low, cvd, r, cum):
+            return Bar(i * 3600, 100, high, low, close, cvd, 20, abs(r), r, False, cum)
+        bars = [
+            bar(0, 100, 101, 99, 1, 5, 1),
+            bar(1, 100, 101, 99, 6, 60, 7),
+            bar(2, 95, 98, 94, -8, -10, -1),
+            bar(3, 94, 97, 93, -4, -10, -5),
+            bar(4, 90, 92, 89, -1, -2, -6),
+            bar(5, 90, 92, 89, -1, -2, -7),
+            bar(6, 101, 101.2, 100.5, 4, 1, -3),
+        ]
+        events, levels = scan_smart_serok("A" * 32, "TEST", bars)
+        self.assertEqual([event.signal for event in events], [SIG_RESISTANCE, SIG_RETEST_RES])
+        self.assertEqual(len(levels), 1)
+
+    def test_support_and_retest_are_detected(self):
+        def bar(i, close, high, low, cvd, r, cum):
+            return Bar(i * 3600, 100, high, low, close, cvd, 20, abs(r), r, False, cum)
+        bars = [
+            bar(0, 100, 101, 99, -1, -5, -1),
+            bar(1, 100, 101, 99, -6, -60, -7),
+            bar(2, 105, 106, 102, 8, 10, 1),
+            bar(3, 106, 107, 103, 4, 10, 5),
+            bar(4, 110, 111, 108, 1, 2, 6),
+            bar(5, 110, 111, 108, 1, 2, 7),
+            bar(6, 99, 99.5, 98.8, -4, -1, 3),
+        ]
+        events, levels = scan_smart_serok("B" * 32, "TEST2", bars)
+        self.assertEqual([event.signal for event in events], [SIG_SUPPORT, SIG_RETEST_SUP])
+        self.assertEqual(len(levels), 1)
+
+
+class RawTradeTests(unittest.TestCase):
+    def test_normalize_gmgn_trade(self):
+        trade = normalize_trade("A" * 32, {
+            "maker": "wallet", "event": "buy", "timestamp": 1_700_000_000,
+            "quote_amount": "1.25", "price_usd": "0.0001", "tx_hash": "tx",
+            "maker_tags": ["mev_bot"],
+        })
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.event, "buy")
+        self.assertIn("mev_bot", trade.tags)
+
+    def test_paginates_until_cursor_is_empty(self):
+        class Response(io.BytesIO):
+            headers = type("Headers", (), {"get_content_charset": lambda self: "utf-8"})()
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): self.close()
+        item = {
+            "maker": "wallet", "event": "sell", "timestamp": 1_700_000_000,
+            "quote_amount": "2", "price_usd": "0.1", "tx_hash": "tx-2",
+        }
+        pages = [
+            Response(json.dumps({"code": 0, "data": {"history": [item], "next": "cursor-2"}}).encode()),
+            Response(json.dumps({"code": 0, "data": {"history": [], "next": ""}}).encode()),
+        ]
+        client = GMGNWebClient("cookie=value")
+        with patch("gmgn_trading_bot.gmgn_web.urllib.request.urlopen", side_effect=pages) as request, patch(
+            "gmgn_trading_bot.gmgn_web.time.sleep"
+        ):
+            trades = client.fetch_trades("A" * 32, 1_699_999_000, 1_700_001_000)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(request.call_count, 2)
 
 
 class GMGNClientTests(unittest.TestCase):
@@ -103,7 +153,43 @@ class TelegramTests(unittest.TestCase):
         self.assertEqual(chats, [{"id": "6743", "type": "private", "name": "tester", "text": "/start"}])
 
 
+class TelegramControlTests(unittest.TestCase):
+    def test_add_is_authorized_and_persistent(self):
+        class Notifier:
+            enabled = True
+            chat_id = "123"
+            sent = []
+            def send_text(self, text, reply_markup=None): self.sent.append(text)
+            def answer_callback(self, callback_id, text): pass
+        class Monitor:
+            last_cycle_at = None
+            last_error = None
+            level_cache = {}
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / "state.db")
+            controller = TelegramController(Notifier(), store, Monitor())
+            controller._handle({"message": {"chat": {"id": 999}, "text": "/add " + "A" * 32}})
+            self.assertEqual(store.list_watchlist(), [])
+            controller._handle({"message": {"chat": {"id": 123}, "text": "/add " + "A" * 32 + " TEST"}})
+            self.assertEqual(store.list_watchlist()[0]["symbol"], "TEST")
+            store.close()
+
+
 class StateTests(unittest.TestCase):
+    def test_migrates_v015_database_without_losing_dedup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.db"
+            connection = sqlite3.connect(path)
+            connection.execute("CREATE TABLE sent_events(event_id TEXT PRIMARY KEY, sent_at INTEGER NOT NULL)")
+            connection.execute("INSERT INTO sent_events VALUES('old-event', 1)")
+            connection.commit()
+            connection.close()
+            store = StateStore(path)
+            tables = {row[0] for row in store.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertTrue({"watchlist", "trades", "kv"}.issubset(tables))
+            self.assertTrue(store.was_sent("old-event"))
+            store.close()
+
     def test_persists_dedup(self):
         with tempfile.TemporaryDirectory() as directory:
             store = StateStore(Path(directory) / "state.db")

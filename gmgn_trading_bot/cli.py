@@ -55,8 +55,9 @@ def main() -> None:
 
     if args.check_config:
         print(
-            f"OK: {len(config.watchlist)} token, TF={config.resolution}, "
-            f"Telegram={'ON' if config.telegram_token else 'OFF'}, auto-trade=OFF"
+            f"OK: {len(config.watchlist)} seed token, TF={config.resolution}, "
+            f"Telegram={'ON' if config.telegram_token else 'OFF'}, "
+            f"GMGN raw trades={'ON' if config.web_cookie else 'OFF'}, auto-trade=OFF"
         )
         return
 

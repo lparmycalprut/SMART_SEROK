@@ -1,103 +1,42 @@
-# ================================================================
-# gmgn_trading_bot — TEMPLATE KONFIGURASI LENGKAP v0.1.5
-# ================================================================
-# Salin file ini menjadi config.toml:
-#   cp config.example.toml config.toml
-#
-# Secret TIDAK ditulis di file ini. Isi GMGN_API_KEY dan konfigurasi
-# Telegram melalui environment variable (lihat bot.env.example).
+# gmgn_trading_bot v0.2.0 — empat sinyal SMART SEROK
+# Salin menjadi config.toml. Secret hanya di bot.env.
 
 [gmgn]
-# Endpoint resmi GMGN OpenAPI. Biasanya tidak perlu diubah.
 host = "https://openapi.gmgn.ai"
-# Versi bot saat ini hanya memantau Solana.
+web_host = "https://gmgn.ai"
 chain = "sol"
 
 [monitor]
-# Timeframe K-line GMGN yang didukung:
-# "30s", "1m", "5m", "15m", "1h", "4h", atau "1d".
+# Level Engine saat ini tepat untuk candle 1H.
 resolution = "1h"
-
-# Jeda antar-siklus pengecekan seluruh watchlist.
-# Untuk candle 1H, 60 detik sudah cukup.
 poll_seconds = 60
-
-# Jeda request antara token pertama, kedua, dan seterusnya.
-# Rate limit default OpenAPI sekitar 1 request/detik; nilai minimum bot = 1.0.
 request_spacing_seconds = 1.1
-
-# Jumlah candle yang diminta untuk menghitung lookback dan median volume.
-# Harus lebih besar daripada breakout_lookback. Minimum internal bot = 10.
-history_bars = 80
-
-# Tunggu beberapa detik setelah waktu candle seharusnya selesai agar candle
-# berjalan tidak salah dianggap final.
+# Token baru langsung mengambil raw trades minimal 48 jam.
+backfill_hours = 48
 close_grace_seconds = 15
 
-# false (disarankan): start pertama hanya merekam candle terbaru tanpa alert.
-# true: bot boleh mengevaluasi candle terbaru ketika database masih kosong.
-alert_on_startup = false
-
-[chart_signal]
-# CATATAN: sinyal ini sementara berbasis OHLCV, BUKAN Level Engine R/CVD.
-# CHART_BREAKOUT = close terbaru > high seluruh N candle sebelumnya.
-# CHART_BREAKDOWN = close terbaru < low seluruh N candle sebelumnya.
-breakout_lookback = 20
-
-# Volume candle sinyal wajib minimal sekian kali median volume N candle.
-# Contoh 1.5 = minimal 150% median. Isi 0 untuk mematikan syarat volume.
-min_volume_ratio = 1.5
-
-# Besar body open→close wajib minimal sekian persen (nilai absolut).
-# Contoh 3.0 = minimal naik/turun 3%. Isi 0 untuk mematikan syarat ini.
-min_candle_move_pct = 3.0
-
-# Ketiga kondisi berlaku bersama:
-#   1. close menembus high/low lookback
-#   2. volume memenuhi min_volume_ratio
-#   3. gerak candle memenuhi min_candle_move_pct
-
 [storage]
-# SQLite menyimpan candle terakhir dan ID alert yang sudah dikirim.
-# Folder dibuat otomatis. Jangan hapus jika tidak ingin alert terulang.
+# Watchlist dinamis, raw trades, level event, dan deduplikasi disimpan di sini.
 sqlite_path = "var/gmgn_trading_bot.db"
 
 [telegram]
-# Section ini sengaja tidak menyimpan secret.
-# TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID dibaca dari environment.
-# Jika keduanya kosong, bot tetap berjalan dan menulis sinyal ke console.
-# Jika Telegram digunakan, keduanya wajib diisi berpasangan.
+# Kontrol memakai TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID dari bot.env.
 
-# ================================================================
-# WATCHLIST MANUAL
-# ================================================================
-# Tambahkan satu blok [[watchlist]] untuk setiap mint.
-# mint    : contract/mint address Solana (wajib)
-# symbol  : label yang tampil di log/Telegram (disarankan)
-# enabled : true untuk dipantau, false untuk dinonaktifkan sementara
-
+# Seed awal. Setelah start, watchlist dapat dikelola dari Telegram.
 [[watchlist]]
 mint = "7fDdLy2rmQKsPCkqUXEd1mN7yDfEzArc4VrctWmfkJBK"
 symbol = "Z500"
 enabled = true
 
-# Slot token kedua — boleh kosong selama enabled = false.
-# Isi mint/symbol lalu ubah enabled menjadi true saat ingin dipantau.
+# Slot kosong aman jika enabled=false.
 [[watchlist]]
 mint = ""
-symbol = "TOKEN_KEDUA"
+symbol = ""
 enabled = false
 
-# Contoh token ketiga:
-# [[watchlist]]
-# mint = "MINT_SOLANA_DI_SINI"
-# symbol = "TOKEN"
-# enabled = true
-
-# ================================================================
-# BELUM TERSEDIA DI v0.1.5
-# ================================================================
-# - Discovery otomatis dari trending GMGN
-# - Sinyal resistance/support/retest berbasis CVD dan R
-# - Auto-trade
-# Bagian tersebut tidak memiliki opsi konfigurasi aktif pada versi ini.
+# Alert yang diizinkan hanya:
+# 1. RESISTANCE TERBENTUK
+# 2. SUPPORT TERBENTUK
+# 3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
+# 4. RETEST SUPPORT — KEMUNGKINAN BREAKDOWN
+# Tidak ada CHART_BREAKOUT/CHART_BREAKDOWN. Auto-trade OFF.

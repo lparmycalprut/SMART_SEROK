@@ -73,7 +73,7 @@ class GMGNClient:
                 headers={
                     "X-APIKEY": self.api_key,
                     "Content-Type": "application/json",
-                    "User-Agent": "gmgn-trading-bot/0.1.5",
+                    "User-Agent": "gmgn-trading-bot/0.2.0",
                 },
             )
             try:
@@ -107,6 +107,10 @@ class GMGNClient:
                 raise GMGNError(f"GMGN API error: {safe}")
             return envelope.get("data")
         raise GMGNError("gagal menyelaraskan timestamp dengan server GMGN")
+
+    def get_token_info(self, chain: str, mint: str) -> dict[str, Any]:
+        data = self._get("/v1/token/info", {"chain": chain, "address": mint})
+        return data if isinstance(data, dict) else {}
 
     def get_klines(self, chain: str, mint: str, resolution: str, *, bars: int = 80) -> list[Candle]:
         now_ms = self.now_ms()

@@ -153,14 +153,16 @@ BOT_FILES = [
     "gmgn_trading_bot/cli.py",
     "gmgn_trading_bot/config.py",
     "gmgn_trading_bot/gmgn.py",
+    "gmgn_trading_bot/gmgn_web.py",
+    "gmgn_trading_bot/engine.py",
     "gmgn_trading_bot/models.py",
     "gmgn_trading_bot/monitor.py",
     "gmgn_trading_bot/notifier.py",
-    "gmgn_trading_bot/signals.py",
     "gmgn_trading_bot/state.py",
+    "gmgn_trading_bot/telegram_control.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.1.5"
+BOT_VERSION = "0.2.0"
 
 
 def ext_version():
@@ -298,7 +300,7 @@ PAGE = """<!doctype html>
 
   <div class="card">
     <h2>🐍 Download bot Python <span class="ver" id="botver">—</span></h2>
-    <p>Paket monitor watchlist GMGN OpenAPI. API key, token Telegram, config lokal, dan database tidak pernah dimasukkan ke ZIP.</p>
+    <p>Empat sinyal SMART SEROK dari raw trades GMGN, backfill 48 jam, dan kontrol watchlist via Telegram. API key, cookie, token Telegram, config lokal, dan database tidak pernah dimasukkan ke ZIP.</p>
     <a class="dl" id="botdlbtn" href="/download-bot">⬇ Download gmgn_trading_bot.zip</a>
     <div class="files" id="botfiles"></div>
     <div class="steps">
