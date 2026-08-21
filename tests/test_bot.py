@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -172,6 +173,19 @@ class TelegramTests(unittest.TestCase):
             [item["command"] for item in commands],
             ["add", "remove", "list", "pause", "resume", "refresh", "levels", "status", "test", "help"],
         )
+
+    def test_retries_transient_telegram_handshake_failure(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): self.close()
+        response = Response(b'{"ok":true,"result":{"username":"smart_serok"}}')
+        notifier = TelegramNotifier("token", "123")
+        with patch(
+            "gmgn_trading_bot.notifier.urllib.request.urlopen",
+            side_effect=[urllib.error.URLError("handshake timed out"), response],
+        ) as api, patch("gmgn_trading_bot.notifier.time.sleep"):
+            self.assertEqual(notifier.get_me()["username"], "smart_serok")
+        self.assertEqual(api.call_count, 2)
 
 
 class TelegramControlTests(unittest.TestCase):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,21 +30,34 @@ class TelegramNotifier:
             data=data,
             method="POST" if data is not None else "GET",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                body = json.loads(response.read().decode())
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+        last_error: Exception | None = None
+        for attempt in range(3):
             try:
-                description = json.loads(detail).get("description", detail)
-            except json.JSONDecodeError:
-                description = detail
-            raise RuntimeError(f"Telegram {method} gagal: {description}") from exc
-        except (urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Telegram {method} gagal: {exc}") from exc
-        if not body.get("ok"):
-            raise RuntimeError(f"Telegram {method} gagal: {body.get('description', 'unknown')}")
-        return body.get("result")
+                with urllib.request.urlopen(request, timeout=25) as response:
+                    body = json.loads(response.read().decode())
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                try:
+                    error_body = json.loads(detail)
+                    description = error_body.get("description", detail)
+                    retry_after = int((error_body.get("parameters") or {}).get("retry_after", 0))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    description, retry_after = detail, 0
+                if attempt < 2 and (exc.code == 429 or 500 <= exc.code < 600):
+                    time.sleep(max(retry_after, attempt + 1))
+                    continue
+                raise RuntimeError(f"Telegram {method} gagal: {description}") from exc
+            except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    LOG.warning("Telegram %s koneksi gagal; retry %d/2: %s", method, attempt + 1, exc)
+                    time.sleep(attempt + 1)
+                    continue
+                break
+            if not body.get("ok"):
+                raise RuntimeError(f"Telegram {method} gagal: {body.get('description', 'unknown')}")
+            return body.get("result")
+        raise RuntimeError(f"Telegram {method} gagal setelah 3 percobaan: {last_error}") from last_error
 
     def get_me(self) -> dict[str, Any]:
         result = self._call("getMe")
