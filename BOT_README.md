@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.3 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.4 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
@@ -32,7 +32,7 @@ python bot.py --once
 python bot.py
 ```
 
-Mulai v0.2.3, ZIP update tidak berisi `bot.env`, `config.toml`, maupun kedua
+Mulai v0.2.4, ZIP update tidak berisi `bot.env`, `config.toml`, maupun kedua
 file contohnya. Gunakan file lokal yang sudah ada. Jangan ekstrak ZIP langsung
 menimpa instalasi; gunakan updater agar source saja yang diganti.
 

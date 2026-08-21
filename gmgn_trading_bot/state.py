@@ -48,6 +48,11 @@ class StateStore:
         now = int(time.time())
         with self.lock:
             for token in tokens:
+                removed = self.connection.execute(
+                    "SELECT value FROM kv WHERE key=?", (f"removed_watch:{token.mint}",)
+                ).fetchone()
+                if removed and str(removed[0]) == "1":
+                    continue
                 self.connection.execute(
                     "INSERT OR IGNORE INTO watchlist(mint,symbol,enabled,added_at) VALUES(?,?,1,?)",
                     (token.mint, token.symbol, now),
@@ -61,6 +66,7 @@ class StateStore:
 
     def add_watch(self, mint: str, symbol: str) -> None:
         with self.lock:
+            self.connection.execute("DELETE FROM kv WHERE key=?", (f"removed_watch:{mint}",))
             self.connection.execute(
                 """INSERT INTO watchlist(mint,symbol,enabled,added_at,refresh_requested,last_error)
                    VALUES(?,?,1,?,1,NULL) ON CONFLICT(mint) DO UPDATE SET
@@ -74,6 +80,13 @@ class StateStore:
             cursor = self.connection.execute("DELETE FROM watchlist WHERE mint=?", (mint,))
             self.connection.execute("DELETE FROM trades WHERE mint=?", (mint,))
             self.connection.execute("DELETE FROM kv WHERE key IN (?,?)", (f"initialized:{mint}", f"error_alert:{mint}"))
+            if cursor.rowcount > 0:
+                # Tombstone mencegah seed dari config menghidupkan kembali token
+                # yang sengaja dihapus melalui Telegram pada restart berikutnya.
+                self.connection.execute(
+                    "INSERT INTO kv(key,value) VALUES(?, '1') ON CONFLICT(key) DO UPDATE SET value='1'",
+                    (f"removed_watch:{mint}",),
+                )
             self.connection.commit()
             return cursor.rowcount > 0
 

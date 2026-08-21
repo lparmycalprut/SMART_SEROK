@@ -70,8 +70,13 @@ class TelegramController(threading.Thread):
             data = str(callback.get("data") or "")
             if data.startswith("delete:"):
                 mint = data.split(":", 1)[1]
+                # Telegram hanya menerima callback answer selama beberapa detik.
+                # Tombol lama tetap boleh menjalankan delete meski ACK kedaluwarsa.
+                try:
+                    self.notifier.answer_callback(str(callback.get("id")), "Memproses…")
+                except Exception as exc:
+                    LOG.info("callback Telegram sudah kedaluwarsa; delete tetap diproses: %s", exc)
                 deleted = self.state.remove_watch(mint)
-                self.notifier.answer_callback(str(callback.get("id")), "Dihapus" if deleted else "Tidak ditemukan")
                 self.notifier.send_text(f"🗑 {'Dihapus' if deleted else 'Tidak ditemukan'}: {mint}")
             return
 

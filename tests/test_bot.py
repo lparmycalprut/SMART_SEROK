@@ -159,19 +159,32 @@ class TelegramControlTests(unittest.TestCase):
             enabled = True
             chat_id = "123"
             sent = []
+            stale = False
             def send_text(self, text, reply_markup=None): self.sent.append(text)
-            def answer_callback(self, callback_id, text): pass
+            def answer_callback(self, callback_id, text):
+                if self.stale:
+                    raise RuntimeError("query is too old")
         class Monitor:
             last_cycle_at = None
             last_error = None
             level_cache = {}
         with tempfile.TemporaryDirectory() as directory:
             store = StateStore(Path(directory) / "state.db")
-            controller = TelegramController(Notifier(), store, Monitor())
+            notifier = Notifier()
+            controller = TelegramController(notifier, store, Monitor())
             controller._handle({"message": {"chat": {"id": 999}, "text": "/add " + "A" * 32}})
             self.assertEqual(store.list_watchlist(), [])
             controller._handle({"message": {"chat": {"id": 123}, "text": "/add " + "A" * 32 + " TEST"}})
             self.assertEqual(store.list_watchlist()[0]["symbol"], "TEST")
+
+            notifier.stale = True
+            controller._handle({"callback_query": {
+                "id": "old", "data": "delete:" + "A" * 32,
+                "message": {"chat": {"id": 123}},
+            }})
+            self.assertEqual(store.list_watchlist(), [])
+            store.seed_watchlist((WatchToken("A" * 32, "DEFAULT", True),))
+            self.assertEqual(store.list_watchlist(), [])
             store.close()
 
 
