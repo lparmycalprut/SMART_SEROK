@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.3
+ * SMART SEROK — v9.2.12
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -39,6 +39,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
+const EXT_VER = "9.2.12";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -85,7 +86,10 @@
   // tanpa mematikan retest pada token yang bergerak rapat.
   const LVL_EXIT_PCT = 2;               // % menjauh dari garis agar level "armed"
   const LVL_RETEST_MIN_GAP = 2;         // jeda minimal (bar) sebelum retest dihitung
-  const LVL_RETEST_R_MAX = 1.2;         // retest valid bila |R| ≤1,2× median klaster
+  // Harus SAMA dengan batas "normal" di R MONITOR (R_BAND_ABSORB = 1,5).
+  // Kalau lebih ketat, ada bar yang dibaca "normal" oleh R MONITOR tapi ditolak
+  // sebagai retest — membingungkan dan membuat sinyal retest hilang.
+  const LVL_RETEST_R_MAX = 1.5;         // retest valid bila |R| <1,5× acuan (= band normal)
   const SIG_RESISTANCE = "RESISTANCE TERBENTUK";
   const SIG_SUPPORT = "SUPPORT TERBENTUK";
   const SIG_RETEST_RES = "RETEST RESISTANCE — KEMUNGKINAN BREAKOUT";
@@ -101,7 +105,9 @@
   const R_BAND_FREE = 0.5;              // < 0,5× acuan → BEBAS (tanpa perlawanan)
   const R_BAND_ABSORB = 1.5;            // ≥ 1,5× acuan → SERAP (perlawanan muncul)
   const R_BAND_WALL = 4;                // ≥ 4×   acuan → TEMBOK (perlawanan kuat)
+  const R_BAND_BLAZE = 12;              // ≥ 12×  acuan → tembok EKSTREM (hanya menyala penuh bila lolos ambang sinyal)
   const R_MON_MIN_EFFORT = 1;           // SOL — di bawah ini R tidak bermakna (bar sepi)
+  const HL_MIN_SOL = 0.001;             // SOL — trade di bawah ini tidak boleh menentukan HIGH/LOW
   const R_MON_MOVE_PCT = 3;             // |chg| ≥ ini dianggap "harga benar-benar bergerak"
   let rMonitorMode = true;              // default: tampilkan R MONITOR
 
@@ -782,10 +788,23 @@
     let bars = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([start, list]) => {
       list.sort((a, b) => a.ts - b.ts);
       const priced = list.filter(t => t.price > 0);
+      // HIGH/LOW hanya dari trade bernilai nyata. Trade debu (≈0 SOL) sering
+      // tercetak di harga ekstrem dan menarik wick ke level yang tidak pernah
+      // benar-benar diperdagangkan — garis level jadi salah dan retest tak pernah
+      // kena. Kasus nyata BABYSHIB 20 Agu 01:00: satu trade 0,0000 SOL membuat
+      // HIGH $250,5K padahal harga nyata tertinggi $121,8K.
+      const real = priced.filter(t => t.sol >= HL_MIN_SOL);
+      const hlSrc = real.length ? real : priced;
       const open = priced.length ? priced[0].price : null;
       const close = priced.length ? priced[priced.length - 1].price : null;
-      const high = priced.length ? Math.max(...priced.map(p => p.price)) : null;
-      const low = priced.length ? Math.min(...priced.map(p => p.price)) : null;
+      const high = hlSrc.length ? Math.max(...hlSrc.map(p => p.price)) : null;
+      const low = hlSrc.length ? Math.min(...hlSrc.map(p => p.price)) : null;
+      // Jejak forensik: high/low kalau trade debu IKUT dihitung. Selisihnya
+      // membuat anomali wick tetap terlacak di file ekspor tanpa perlu
+      // menyertakan raw trades (yang membengkakkan file ~100x).
+      const highRaw = priced.length ? Math.max(...priced.map(p => p.price)) : null;
+      const lowRaw = priced.length ? Math.min(...priced.map(p => p.price)) : null;
+      const dustTx = priced.length - real.length;
       let cvd = 0, cvdClean = 0, washVol = 0, buySol = 0, sellSol = 0, volUsd = 0;
       let freshTxCount = 0, freshBuySol = 0, freshSellSol = 0;
       const mv = new Map(), taggedMakers = new Set(), freshMakers = new Set();
@@ -824,6 +843,7 @@
         txCount: list.length, uniqueMakers: mv.size, taggedMakers: taggedMakers.size,
         freshWallets, freshWalletPct, freshTxCount, freshBuySol, freshSellSol,
         topWalletPct: volSol > 0 ? (top1 / volSol) * 100 : 0, R, signedR,
+        highRaw, lowRaw, dustTx, maxTradeSol: top1,
         partial: (start + BAR_SEC) > now };
     });
     if (bars.length > MAX_BARS) bars = bars.slice(-MAX_BARS);
@@ -838,6 +858,8 @@
       b.highMc = mcPerPrice > 0 && b.high != null ? b.high * mcPerPrice : null;
       b.lowMc = mcPerPrice > 0 && b.low != null ? b.low * mcPerPrice : null;
       b.closeMc = mcPerPrice > 0 && b.close != null ? b.close * mcPerPrice : null;
+      b.highRawMc = mcPerPrice > 0 && b.highRaw != null ? b.highRaw * mcPerPrice : null;
+      b.lowRawMc = mcPerPrice > 0 && b.lowRaw != null ? b.lowRaw * mcPerPrice : null;
     }
     let cum = 0, cl = 0;
     for (let i = 0; i < bars.length; i++) {
@@ -1067,7 +1089,7 @@
   //      bergerak menjauh ke arah yang benar
   //   3. penyerapan terbukti -> level lahir (HIGH-LOW candle itu, dalam MC)
   //      penyerapan gagal    -> tidak ada level, tidak ada sinyal
-  //   4. saat harga kembali ke zona level dengan R normal -> sinyal retest
+  //   4. saat harga kembali ke GARIS level dengan R normal -> sinyal retest
 
   // Candle penyerapan: R melonjak dan effort cukup besar untuk dipercaya.
   function absorptionAt(bars, i) {
@@ -1098,44 +1120,59 @@
     if (refClose == null || !(refClose > 0)) return null;
     const lvlHigh = b.high, lvlLow = b.low;
 
-    // GAGAL: harga justru menembus level lebih jauh ke arah berlawanan.
-    // Resistance gagal jika harga menembus HIGH; support gagal jika tembus LOW.
-    for (const a of after) {
-      if (isRes && lvlHigh > 0 && a.close != null && (a.close / lvlHigh - 1) * 100 > LVL_FAIL_PCT) {
-        return { status: "failed", why: "harga menembus HIGH level" };
-      }
-      if (!isRes && lvlLow > 0 && a.close != null && (lvlLow / a.close - 1) * 100 > LVL_FAIL_PCT) {
-        return { status: "failed", why: "harga menembus LOW level" };
-      }
-    }
-
     const rBase = rAbsOf(b);
-    // Pakai titik TERJAUH yang dicapai, bukan bar terakhir. Contoh nyata:
-    // high 121,76K lalu turun sampai 49,54K — yang membuktikan level adalah
-    // 49,54K itu, meskipun setelahnya harga memantul naik lagi.
-    let extreme = refClose, extIdx = 0;
-    after.forEach((a, k) => {
-      const v = isRes ? a.low : a.high;
-      if (v == null || !(v > 0)) return;
-      if (isRes ? v < extreme : v > extreme) { extreme = v; extIdx = k; }
-    });
-    const movePct = (extreme / refClose - 1) * 100;
-    // cumCVD diukur sampai bar titik terjauh, bukan sampai bar terakhir.
-    const atExt = after[extIdx];
-    const cvdDelta = (atExt && atExt.cumCVD != null && b.cumCVD != null) ? atExt.cumCVD - b.cumCVD : 0;
-    // R sesudahnya harus runtuh: median |R| bar dari penyerapan sampai titik terjauh.
-    const span = after.slice(0, extIdx + 1);
-    const rAfter = percentile(span.map(a => rAbsOf(a)).filter(v => v != null), 0.5);
-    const rCollapsed = rBase > 0 && rAfter != null && rAfter <= rBase * LVL_R_DROP;
-    const info = { movePct, cvdDelta, rAfter, rBase, bars: after.length, moveBars: extIdx + 1 };
 
-    if (isRes) {
-      // resistance terbukti: R runtuh + cumCVD turun + harga turun
-      const ok = rCollapsed && cvdDelta < 0 && movePct <= -LVL_MIN_MOVE_PCT;
-      return Object.assign({ status: ok ? "confirmed" : "pending" }, info);
+    // Berjalan MAJU bar per bar. Di tiap langkah dinilai dua hal berurutan:
+    //   1. apakah bukti sudah lengkap sampai titik ini -> CONFIRMED, berhenti;
+    //   2. kalau belum, apakah harga menembus level -> FAILED, berhenti.
+    //
+    // Urutannya penting. Versi lama memindai SELURUH jendela 12 bar mencari
+    // penembusan lebih dulu, jadi level yang sudah terbukti berjam-jam
+    // sebelumnya tetap dibatalkan oleh pantulan yang datang belakangan.
+    // Kasus nyata Plumber 21 Agu 01:00: harga jatuh -18,6% dalam 4 bar
+    // (bukti lengkap), baru di bar ke-5 memantul menembus HIGH. Itu level
+    // resistance yang sah lalu ditembus — bukan penyerapan gagal.
+    // Prinsipnya sama dengan pengukuran titik terjauh: begitu terbukti,
+    // level tidak bisa dibatalkan oleh apa yang terjadi sesudahnya.
+    let extreme = refClose, extIdx = 0;
+    let best = null;
+
+    for (let k = 0; k < after.length; k++) {
+      const a = after[k];
+      const v = isRes ? a.low : a.high;
+      if (v != null && v > 0 && (isRes ? v < extreme : v > extreme)) { extreme = v; extIdx = k; }
+
+      // --- 1. cukup bukti sampai bar ini? ---
+      if (k + 1 >= LVL_MIN_CONFIRM_BARS) {
+        const movePct = (extreme / refClose - 1) * 100;
+        const atExt = after[extIdx];
+        const cvdDelta = (atExt && atExt.cumCVD != null && b.cumCVD != null) ? atExt.cumCVD - b.cumCVD : 0;
+        const span = after.slice(0, extIdx + 1);
+        const rAfter = percentile(span.map(x => rAbsOf(x)).filter(v2 => v2 != null), 0.5);
+        const rCollapsed = rBase > 0 && rAfter != null && rAfter <= rBase * LVL_R_DROP;
+        const info = { movePct, cvdDelta, rAfter, rBase, bars: k + 1, moveBars: extIdx + 1 };
+        const ok = isRes
+          ? (rCollapsed && cvdDelta < 0 && movePct <= -LVL_MIN_MOVE_PCT)
+          : (rCollapsed && cvdDelta > 0 && movePct >= LVL_MIN_MOVE_PCT);
+        if (ok) return Object.assign({ status: "confirmed" }, info);
+        best = info;
+      }
+
+      // --- 2. belum terbukti dan harga sudah menembus level -> gagal ---
+      if (a.close != null) {
+        if (isRes && lvlHigh > 0 && (a.close / lvlHigh - 1) * 100 > LVL_FAIL_PCT) {
+          return { status: "failed", why: "harga menembus HIGH level sebelum terbukti" };
+        }
+        if (!isRes && lvlLow > 0 && (lvlLow / a.close - 1) * 100 > LVL_FAIL_PCT) {
+          return { status: "failed", why: "harga menembus LOW level sebelum terbukti" };
+        }
+      }
     }
-    const ok = rCollapsed && cvdDelta > 0 && movePct >= LVL_MIN_MOVE_PCT;
-    return Object.assign({ status: ok ? "confirmed" : "pending" }, info);
+
+    if (best) return Object.assign({ status: "pending" }, best);
+    const movePct = (extreme / refClose - 1) * 100;
+    return { status: "pending", movePct, cvdDelta: 0, rAfter: null, rBase,
+             bars: after.length, moveBars: extIdx + 1 };
   }
 
   function makeLevelEvent(cand, proof, bars) {
@@ -1177,7 +1214,7 @@
     };
   }
 
-  // Retest: harga kembali menyentuh zona level, tetapi R hanya normal.
+  // Retest: harga kembali menyentuh GARIS level, tetapi R hanya normal.
   // Artinya pihak yang dulu mempertahankan level sudah tidak hadir lagi.
   function makeRetestEvent(level, b, i, rNorm, base) {
     const isRes = level.kind === "resistance";
@@ -1222,6 +1259,29 @@
     return b.high >= line - pad && b.low <= line + pad;
   }
 
+  // Ringkasan kenapa retest belum muncul untuk sebuah level.
+  function retestDiagText(lv) {
+    const d = lv && lv.diag;
+    const isRes = lv && lv.kind === "resistance";
+    const what = isRes ? "RETEST RESISTANCE" : "RETEST SUPPORT";
+    if (!d) return `${what}: belum ada bar sesudah level.`;
+    if (!d.touch) {
+      const n = d.near === Infinity ? null : d.near;
+      return n == null
+        ? `${what}: harga belum pernah kembali ke garis.`
+        : `${what}: harga belum menyentuh garis — terdekat ${n.toFixed(2)}% (toleransi ${LVL_LINE_PAD_PCT}%).`;
+    }
+    const parts = [];
+    if (d.rHigh) parts.push(`R masih tinggi ${d.rHighVal != null ? "(" + d.rHighVal.toFixed(2) + "× > " + LVL_RETEST_R_MAX + "×)" : ""} ${d.rHigh}×`);
+    if (d.wrongDir) parts.push(`cumCVD arah salah ${d.wrongDir}×`);
+    if (d.notArmed) parts.push(`level belum ter-arm (harga belum menjauh ${LVL_EXIT_PCT}%) ${d.notArmed}×`);
+    if (d.lowEffort) parts.push(`volume terlalu sepi ${d.lowEffort}×`);
+    if (d.gap) parts.push(`terlalu dekat dgn level (<${LVL_RETEST_MIN_GAP} bar) ${d.gap}×`);
+    if (d.noData) parts.push(`data cumCVD/R kosong ${d.noData}×`);
+    if (!parts.length) return `${what}: sudah menyentuh garis ${d.touch}× — sinyal seharusnya muncul.`;
+    return `${what}: menyentuh garis ${d.touch}× tapi ditahan — ${parts.join(" · ")}.`;
+  }
+
   function scanSignals(bars) {
     const evs = [];
     if (!bars || !bars.length) return { events: evs, pending: null, levels: [] };
@@ -1250,11 +1310,44 @@
       // (dump/pump keras) atau sepi. Kalau arming ikut disaring oleh R normal
       // dan effort, level tidak pernah ter-arm dan retest hilang sama sekali.
       if (b.partial || b.close == null) continue;
+      // Arming dievaluasi dari bar SEBELUMNYA (lv.pendingArm), bukan bar ini.
+      // Kalau bar yang menjauhkan harga juga boleh langsung memicu retest, satu
+      // candle breakout yang wick bawahnya masih menyerempet garis akan
+      // menghasilkan sinyal duplikat. Kasus nyata BABYSHIB 20 Agu 20:00.
       for (const lv of levels) {
         if (lv.idx >= i) continue;
-        const ln = levelLine(lv);
-        if (ln == null || !(ln > 0)) continue;
-        if (Math.abs(b.close / ln - 1) * 100 >= LVL_EXIT_PCT) lv.armed = true;
+        if (lv.pendingArm) { lv.armed = true; lv.pendingArm = false; }
+      }
+
+      // DIAGNOSA: catat pendekatan terdekat & gerbang mana yang menahan retest.
+      // Murni pencatatan, tidak mengubah keputusan sinyal.
+      {
+        const dAbsR = rAbsOf(b);
+        const dRNorm = (base != null && base > 1e-9 && dAbsR != null) ? dAbsR / base : null;
+        const dPrev = i > 0 ? bars[i - 1] : null;
+        const dCvdUp = (dPrev && dPrev.cumCVD != null && b.cumCVD != null) ? b.cumCVD > dPrev.cumCVD : null;
+        for (const lv of levels) {
+          if (lv.idx >= i) continue;
+          const ln = levelLine(lv);
+          if (ln == null || !(ln > 0)) continue;
+          const d = lv.diag || (lv.diag = { near: Infinity, nearAt: null, touch: 0,
+            gap: 0, notArmed: 0, rHigh: 0, lowEffort: 0, wrongDir: 0, noData: 0, rHighVal: null });
+          const inside = b.high != null && b.low != null && b.high >= ln && b.low <= ln;
+          const dist = inside ? 0 : Math.min(
+            b.high != null ? Math.abs(b.high / ln - 1) : Infinity,
+            b.low != null ? Math.abs(b.low / ln - 1) : Infinity) * 100;
+          if (dist < d.near) { d.near = dist; d.nearAt = b.start; }
+          if (!touchesLine(b, lv)) continue;
+          d.touch++;
+          if (i - lv.idx < LVL_RETEST_MIN_GAP) { d.gap++; continue; }
+          if (!lv.armed) { d.notArmed++; continue; }
+          if (dRNorm == null) { d.noData++; continue; }
+          if (dRNorm > LVL_RETEST_R_MAX) { d.rHigh++; d.rHighVal = dRNorm; continue; }
+          if (effortAbs(b) < ABSORB_MIN_CVD) { d.lowEffort++; continue; }
+          if (dCvdUp == null) { d.noData++; continue; }
+          if (lv.kind === "resistance" && !dCvdUp) { d.wrongDir++; continue; }
+          if (lv.kind === "support" && dCvdUp) { d.wrongDir++; continue; }
+        }
       }
 
       // Saringan kualitas candle hanya untuk MEMUNCULKAN sinyal, bukan arming.
@@ -1281,6 +1374,15 @@
         lv.armed = false;
         evs.push(makeRetestEvent(lv, b, i, rNorm, base));
         break;   // satu retest per candle
+      }
+
+      // Setelah emisi: catat kalau bar ini membuat harga menjauh dari garis.
+      // Efeknya baru berlaku di bar berikutnya.
+      for (const lv of levels) {
+        if (lv.idx >= i) continue;
+        const ln2 = levelLine(lv);
+        if (ln2 == null || !(ln2 > 0)) continue;
+        if (Math.abs(b.close / ln2 - 1) * 100 >= LVL_EXIT_PCT) lv.pendingArm = true;
       }
     }
     evs.sort((a, b) => a.confirm.start - b.confirm.start);
@@ -1343,8 +1445,8 @@
     if (isRetest) {
       const res = c.signal === SIG_RETEST_RES;
       lines.push(res
-        ? "🔵 RETEST RESISTANCE — KEMUNGKINAN BREAKOUT. Harga kembali ke zona ini tetapi seller penjaga tidak muncul lagi."
-        : "🟠 RETEST SUPPORT — KEMUNGKINAN BREAKDOWN. Harga kembali ke zona ini tetapi buyer penjaga tidak muncul lagi.");
+        ? "🔵 RETEST RESISTANCE — KEMUNGKINAN TEMBUS KE ATAS. Harga balik ke garis ini tetapi seller yang dulu menahan sudah tidak muncul."
+        : "🟠 RETEST SUPPORT — KEMUNGKINAN JEBOL KE BAWAH. Harga balik ke garis ini tetapi buyer yang dulu menahan sudah tidak muncul.");
       lines.push(`GARIS MC: ${fmtMarketCap(e.lineMc)}   (${res ? "HIGH resistance" : "LOW support"})`);
       lines.push(`level asal: ${fmtTs(e.levelStart)} WIB · retest: ${fmtBar(s)} WIB`);
       lines.push(`R saat retest ${Math.abs(e.setupR).toFixed(2)} = ${e.rNorm.toFixed(2)}× acuan (${e.rBaseline.toFixed(1)}) → tidak ada perlawanan berarti`);
@@ -1375,7 +1477,63 @@
   }
 
   // Klasifikasi satu bar menjadi kondisi R yang bisa dibaca langsung.
-  function readR(b, base) {
+  // Intensitas visual tembok. 4× baru "ada tembok"; makin jauh di atas itu,
+  // blok makin menyala supaya serapan kecil dan serapan raksasa terbedakan
+  // sekilas pandang. Skala logaritmik agar 200× tidak membuat 12× terlihat pucat.
+  // Rasio besar saja TIDAK cukup untuk menyala. Yang boleh menyala penuh hanya
+  // candle yang benar-benar bisa melahirkan sinyal (waspada dump / siap pump),
+  // yaitu kandidat penyerapan: |R| >= R_MIN_ABS DAN lonjakan >= R_SPIKE_MULT×
+  // bar sebelumnya — syarat yang sama persis dipakai absorptionAt().
+  // Contoh nyata Plumber 19 Agu 08:00: rasio 30× acuan tapi |R| cuma 45,8
+  // (di bawah lantai 50), jadi tidak pernah bisa jadi sinyal — tidak boleh
+  // ditandai RAKSASA.
+  function isAbsorbGrade(b, prev) {
+    const absR = rAbsOf(b);
+    if (absR == null || absR < R_MIN_ABS) return false;
+    if (!prev) return true;                 // prev tak tersedia: jangan gugurkan
+    const mult = rSpikeMult(prev, b);
+    return mult != null && mult >= R_SPIKE_MULT;
+  }
+  function wallGlow(ratio, absorbGrade) {
+    if (ratio == null || ratio < R_BAND_WALL) return 0;
+    const lo = Math.log(R_BAND_WALL), hi = Math.log(R_BAND_BLAZE);
+    const t = (Math.log(Math.min(ratio, R_BAND_BLAZE)) - lo) / (hi - lo);
+    const g = Math.max(0, Math.min(1, t));
+    // Tembok yang bukan kandidat sinyal dibatasi agar tidak pernah mencapai
+    // warna menyala (ramp tertinggi butuh >= 0,66).
+    return absorbGrade ? g : Math.min(g, 0.6);
+  }
+  // Warna tembok DUA TINGKAT yang sengaja dibuat berjarak jauh:
+  //
+  //   TEMBOK BIASA  -> merah/hijau kalem (redup, tidak berteriak). Ini cuma
+  //                    catatan "ada perlawanan di sini", bukan peringatan.
+  //   RAKSASA       -> merah/hijau menyala penuh. Hanya candle yang lolos
+  //                    ambang sinyal yang boleh sampai ke sini.
+  //
+  // Sebelumnya tingkat terendah pun sudah #ef4444 (merah terang), jadi tembok
+  // sepele terlihat hampir sama bahayanya dengan serapan raksasa. Sekarang
+  // tingkat biasa diturunkan ke merah bata / hijau lumut yang jelas teredam.
+  function wallColor(side, glow, blaze) {
+    // Merah/hijau MENYALA hanya di sini. Loncatan kecerahan dari tingkat biasa
+    // ke raksasa sengaja dibuat besar (seller ~2,4x, buyer ~4,5x luminansi)
+    // supaya beda kelasnya tertangkap mata tanpa membandingkan berdampingan.
+    if (blaze) return side === "seller" ? "#ff3355" : "#00ff5e";
+    const ramp = side === "seller"
+      ? ["#77403f", "#8a4744"]     // merah bata teredam -> sedikit lebih hidup
+      : ["#3d6b50", "#457a5a"];    // hijau lumut teredam -> sedikit lebih hidup
+    return glow >= 0.5 ? ramp[1] : ramp[0];
+  }
+  // Warna ISIAN di atas sengaja gelap supaya tembok biasa tidak berteriak di
+  // grafik. Tapi warna yang sama dipakai juga sebagai warna TEKS pill/tag, dan
+  // di sana kontrasnya cuma ~2,3-3,7x terhadap latar — teksnya jadi susah
+  // dibaca. Jadi teks memakai versi terang dari rona yang sama: nuansanya tetap
+  // satu keluarga, keterbacaannya aman (>=6,5x).
+  function wallTextColor(side, glow, blaze) {
+    if (blaze) return side === "seller" ? "#ff3355" : "#00ff5e";
+    return side === "seller" ? "#cf8a84" : "#7fc79a";
+  }
+
+  function readR(b, base, prev) {
     const chg = b.priceChgPct;
     const effort = effortOf(b);
     const absEffort = Math.abs(effort);
@@ -1390,33 +1548,59 @@
                color: "#475569", ratio: null };
     }
     const ratio = base && base > 1e-9 ? absR / base : null;
-    const up = chg > 0;
-    const arah = up ? "naik" : chg < 0 ? "turun" : "datar";
-    // Tanda R menyatakan sisi mana yang sedang diserap.
-    const sisi = effort >= 0 ? "BUY diserap seller" : "SELL diserap buyer";
+    const naik = chg > 0, turun = chg < 0;
+    const chgTxt = `${Math.abs(chg).toFixed(1)}%`;
+    // effort = CVD bersih. Positif -> net BUY, tapi harga tidak ikut naik
+    // sebanding: berarti SELLER yang menyerap. Negatif -> sebaliknya.
+    // Kalimat harus menyatukan arah harga + siapa yang menahan, kalau tidak
+    // hasilnya rancu seperti "harga turun · BUY diserap seller".
+    const netBuy = effort >= 0;
+    function kalimat(kuat) {
+      const lvl = kuat ? "kuat" : "";
+      if (netBuy) {
+        // net BUY masuk
+        if (naik) return `beli masuk tapi harga cuma naik ${chgTxt} — seller menahan${lvl ? " " + lvl : ""} di atas`;
+        if (turun) return `beli masuk tapi harga malah turun ${chgTxt} — seller menekan${lvl ? " " + lvl : ""}, permintaan diserap habis`;
+        return `beli masuk tapi harga diam — seller menahan${lvl ? " " + lvl : ""} di atas`;
+      }
+      // net SELL keluar
+      if (turun) return `jual keluar tapi harga cuma turun ${chgTxt} — buyer menahan${lvl ? " " + lvl : ""} di bawah`;
+      if (naik) return `jual keluar tapi harga malah naik ${chgTxt} — buyer menyerap${lvl ? " " + lvl : ""}, tekanan jual ditelan`;
+      return `jual keluar tapi harga diam — buyer menahan${lvl ? " " + lvl : ""} di bawah`;
+    }
 
     if (ratio == null) {
       return { code: "RAW", label: absR.toFixed(1), desc: "acuan belum cukup (≥4 bar)",
                color: "#94a3b8", ratio: null };
     }
     if (ratio >= R_BAND_WALL) {
-      return { code: "TEMBOK", label: "TEMBOK", ratio,
-               desc: `perlawanan kuat saat harga ${arah} · ${sisi}`, color: "#ef4444" };
+      // +R (batang di ATAS garis) = order SELL yang menahan  -> TEMBOK SELLER (merah)
+      // −R (batang di BAWAH garis) = order BUY yang menahan  -> TEMBOK BUYER  (hijau)
+      const side = netBuy ? "seller" : "buyer";
+      const grade = isAbsorbGrade(b, prev);
+      const glow = wallGlow(ratio, grade);
+      const blaze = grade && ratio >= R_BAND_BLAZE;
+      return { code: "TEMBOK", side, glow, blaze,
+               label: (netBuy ? "TEMBOK SELLER" : "TEMBOK BUYER") + (blaze ? " 🔥" : ""),
+               ratio, desc: kalimat(true) + (blaze ? ` · serapan RAKSASA ${ratio.toFixed(0)}× acuan` : ""),
+               color: wallColor(side, glow, blaze),
+               textColor: wallTextColor(side, glow, blaze) };
     }
     if (ratio >= R_BAND_ABSORB) {
       return { code: "SERAP", label: "SERAP", ratio,
-               desc: `ada perlawanan saat harga ${arah} · ${sisi}`, color: "#fbbf24" };
+               desc: kalimat(false), color: "#fbbf24" };
     }
     if (ratio < R_BAND_FREE) {
       const clear = Math.abs(chg) >= R_MON_MOVE_PCT;
+      const arah = naik ? "naik" : turun ? "turun" : "datar";
       return { code: clear ? "BEBAS" : "TIPIS", label: clear ? "BEBAS" : "tipis", ratio,
                desc: clear
-                 ? `harga ${arah} ${Math.abs(chg).toFixed(1)}% nyaris tanpa perlawanan`
+                 ? `harga ${arah} ${chgTxt} nyaris tanpa perlawanan`
                  : `R rendah tapi harga hampir diam (${chg.toFixed(2)}%)`,
                color: clear ? "#22c55e" : "#64748b" };
     }
     return { code: "NORMAL", label: "normal", ratio,
-             desc: `perlawanan wajar · ${sisi}`, color: "#94a3b8" };
+             desc: `perlawanan wajar · ${netBuy ? "net beli" : "net jual"}`, color: "#94a3b8" };
   }
 
   // Ringkasan bar terakhir yang sudah selesai — kesimpulan tetap di tangan user.
@@ -1425,7 +1609,8 @@
     const done = (bars || []).filter(b => !b.partial);
     const last = done.length ? done[done.length - 1] : null;
     if (!last) return { base, last: null, read: null, text: "Belum ada candle selesai." };
-    const read = readR(last, base);
+    const lastPrev = done.length > 1 ? done[done.length - 2] : null;
+    const read = readR(last, base, lastPrev);
     const chg = last.priceChgPct;
     let text;
     switch (read.code) {
@@ -1433,7 +1618,11 @@
         text = `Candle ${fmtBar(last)}: harga ${chg > 0 ? "naik" : "turun"} ${Math.abs(chg).toFixed(1)}% dengan perlawanan minim. Gerakan bersih.`;
         break;
       case "TEMBOK":
-        text = `Candle ${fmtBar(last)}: perlawanan KUAT (${read.ratio.toFixed(1)}× normal). Pihak lawan aktif menahan di area ini.`;
+        text = `Candle ${fmtBar(last)}: ${read.label} (${read.ratio.toFixed(1)}× normal). `
+          + (read.side === "seller"
+              ? "Order SELL menahan kuat di atas — harga sulit naik."
+              : "Order BUY menahan kuat di bawah — harga sulit turun.")
+          + (read.blaze ? " Serapan RAKSASA — blok menyala penuh." : "");
         break;
       case "SERAP":
         text = `Candle ${fmtBar(last)}: perlawanan mulai muncul (${read.ratio.toFixed(1)}× normal).`;
@@ -1459,7 +1648,7 @@
     // ---- panel ringkas: kondisi candle terakhir ----
     let head = `<div class="gmgn-rm-head">`;
     if (sum.read) {
-      head += `<span class="gmgn-rm-tag" style="background:${sum.read.color}22;color:${sum.read.color};border-color:${sum.read.color}66;">${esc(sum.read.label)}</span>`;
+      head += `<span class="gmgn-rm-tag" style="background:${sum.read.color}22;color:${sum.read.textColor || sum.read.color};border-color:${(sum.read.textColor || sum.read.color)}66;">${esc(sum.read.label)}</span>`;
     }
     head += `<span class="gmgn-rm-sum">${esc(sum.text)}</span>`;
     head += `<span class="gmgn-rm-base">acuan |R| ${base != null ? base.toFixed(1) : "—"}</span>`;
@@ -1473,8 +1662,8 @@
     const n = data.length;
     const slot = iw / n;
     const bw = Math.max(3, Math.min(20, slot * 0.62));
-    const ratios = data.map(b => {
-      const r = readR(b, base);
+    const ratios = data.map((b, i) => {
+      const r = readR(b, base, i > 0 ? data[i - 1] : null);
       return r.ratio != null ? Math.min(r.ratio, R_BAND_WALL * 2.5) : 0;
     });
     const peak = Math.max(R_BAND_WALL * 1.2, ...ratios);
@@ -1483,15 +1672,21 @@
 
     let s = "";
     // pita zona
-    const band = (lo, hi, col, op) => {
+    // Pita atas dan bawah digambar terpisah supaya zona TEMBOK bisa berbeda
+    // warna: atas = tembok SELLER (merah), bawah = tembok BUYER (hijau).
+    const bandUp = (lo, hi, col, op) => {
       const yA = yv(hi), yB = yv(lo);
       s += `<rect x="${padL}" y="${yA}" width="${iw}" height="${Math.abs(yB - yA)}" fill="${col}" opacity="${op}"/>`;
-      const yA2 = yv(-lo), yB2 = yv(-hi);
-      s += `<rect x="${padL}" y="${yA2}" width="${iw}" height="${Math.abs(yB2 - yA2)}" fill="${col}" opacity="${op}"/>`;
     };
+    const bandDn = (lo, hi, col, op) => {
+      const yA = yv(-hi), yB = yv(-lo);
+      s += `<rect x="${padL}" y="${Math.min(yA, yB)}" width="${iw}" height="${Math.abs(yB - yA)}" fill="${col}" opacity="${op}"/>`;
+    };
+    const band = (lo, hi, col, op) => { bandUp(lo, hi, col, op); bandDn(lo, hi, col, op); };
     band(0, R_BAND_FREE, "#22c55e", 0.07);
     band(R_BAND_ABSORB, R_BAND_WALL, "#fbbf24", 0.07);
-    band(R_BAND_WALL, peak, "#ef4444", 0.09);
+    bandUp(R_BAND_WALL, peak, "#ef4444", 0.09);   // tembok SELLER
+    bandDn(R_BAND_WALL, peak, "#22c55e", 0.09);   // tembok BUYER
 
     // garis ambang
     [R_BAND_FREE, R_BAND_ABSORB, R_BAND_WALL].forEach(t => {
@@ -1502,22 +1697,20 @@
     s += `<line x1="${padL}" y1="${y0}" x2="${W - padR}" y2="${y0}" stroke="#64748b" stroke-width="1.2"/>`;
 
     // label sumbu kanan
-    const axis = [
-      [R_BAND_WALL, "TEMBOK", "#ef4444"],
-      [R_BAND_ABSORB, "SERAP", "#fbbf24"],
-      [R_BAND_FREE, "BEBAS", "#22c55e"]
-    ];
-    axis.forEach(([v, t, c]) => {
+    // Label ambang: TEMBOK diberi nama sesuai sisi, sisanya tetap simetris.
+    s += `<text x="${W - padR + 7}" y="${yv(R_BAND_WALL) + 3}" fill="#ef4444" font-size="10" font-weight="700">TEMBOK SELLER ${R_BAND_WALL}×</text>`;
+    s += `<text x="${W - padR + 7}" y="${yv(-R_BAND_WALL) + 3}" fill="#22c55e" font-size="10" font-weight="700">TEMBOK BUYER ${R_BAND_WALL}×</text>`;
+    [[R_BAND_ABSORB, "SERAP", "#fbbf24"], [R_BAND_FREE, "BEBAS", "#22c55e"]].forEach(([v, t, c]) => {
       s += `<text x="${W - padR + 7}" y="${yv(v) + 3}" fill="${c}" font-size="10" font-weight="700">${t} ${v}×</text>`;
       s += `<text x="${W - padR + 7}" y="${yv(-v) + 3}" fill="${c}" font-size="10" font-weight="700">${t} ${v}×</text>`;
     });
     s += `<text x="${padL - 6}" y="${padT + 10}" fill="#f87171" font-size="10" text-anchor="end">+R</text>`;
-    s += `<text x="${padL - 6}" y="${padT + 22}" fill="#64748b" font-size="8" text-anchor="end">serap BUY</text>`;
+    s += `<text x="${padL - 6}" y="${padT + 22}" fill="#64748b" font-size="8" text-anchor="end">order SELL</text>`;
     s += `<text x="${padL - 6}" y="${padT + ih - 12}" fill="#4ade80" font-size="10" text-anchor="end">−R</text>`;
-    s += `<text x="${padL - 6}" y="${padT + ih}" fill="#64748b" font-size="8" text-anchor="end">serap SELL</text>`;
+    s += `<text x="${padL - 6}" y="${padT + ih}" fill="#64748b" font-size="8" text-anchor="end">order BUY</text>`;
 
     data.forEach((b, i) => {
-      const r = readR(b, base);
+      const r = readR(b, base, i > 0 ? data[i - 1] : null);
       const cx = padL + slot * i + slot / 2;
       if (r.ratio == null) {
         s += `<circle cx="${cx.toFixed(1)}" cy="${y0}" r="2" fill="#334155"><title>${fmtBar(b)} | ${esc(r.desc)}</title></circle>`;
@@ -1529,8 +1722,32 @@
       const chg = b.priceChgPct;
       const tip = `${fmtBar(b)} | ${r.code} ${r.ratio.toFixed(2)}× acuan | R=${b.signedR >= 0 ? "+" : ""}${(b.signedR || 0).toFixed(2)}`
         + ` | harga ${chg >= 0 ? "+" : ""}${(chg || 0).toFixed(2)}% | effort ${effortOf(b).toFixed(1)} SOL | ${r.desc}`;
-      s += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${hgt.toFixed(1)}"`
-        + ` rx="1.5" fill="${r.color}" opacity="${b.partial ? 0.42 : 0.92}"><title>${esc(tip)}</title></rect>`;
+      // BLOK MENYALA: kolom latar setinggi panel di belakang candle bertembok.
+      // Terangnya mengikuti besar serapan, jadi serapan kecil vs raksasa
+      // langsung kelihatan tanpa membaca angka.
+      if (r.code === "TEMBOK") {
+        const g = r.glow != null ? r.glow : 0;
+        const half = r.side === "seller" ? padT : y0;
+        const hh = r.side === "seller" ? y0 - padT : padT + ih - y0;
+        // Blok tembok biasa sengaja dibuat samar (0.06-0.13) supaya hanya
+        // terbaca sebagai bayangan. Blok RAKSASA jauh lebih pekat.
+        const op = r.blaze ? 0.34 : (0.06 + 0.07 * g);
+        s += `<rect x="${(cx - slot / 2).toFixed(1)}" y="${half.toFixed(1)}" width="${slot.toFixed(1)}" height="${hh.toFixed(1)}"`
+          + ` fill="${r.color}" opacity="${op.toFixed(3)}"/>`;
+      }
+      // BADAN BATANG: candle RAKSASA dilebarkan supaya bobotnya terasa,
+      // tembok biasa tetap selebar candle lain agar tidak ikut menonjol.
+      const bwx = r.blaze ? Math.min(slot * 0.95, bw * 1.9) : bw;
+      s += `<rect x="${(cx - bwx / 2).toFixed(1)}" y="${yTop.toFixed(1)}" width="${bwx.toFixed(1)}" height="${hgt.toFixed(1)}"`
+        + ` rx="${r.blaze ? 2 : 1.5}" fill="${r.color}" opacity="${b.partial ? 0.42 : (r.blaze ? 1 : 0.8)}"><title>${esc(tip)}</title></rect>`;
+      // Candle tembok ekstrem diberi garis tepi terang + penanda, supaya
+      // "menyala" benar-benar terbaca walau bar-nya tipis.
+      if (r.blaze) {
+        s += `<rect x="${(cx - bwx / 2 - 1.5).toFixed(1)}" y="${(yTop - 1.5).toFixed(1)}" width="${(bwx + 3).toFixed(1)}" height="${(hgt + 3).toFixed(1)}"`
+          + ` rx="2.5" fill="none" stroke="${r.color}" stroke-width="1.6" opacity="1"><title>${esc(tip)}</title></rect>`;
+        const my = r.side === "seller" ? padT + 9 : padT + ih - 2;
+        s += `<text x="${cx.toFixed(1)}" y="${my}" fill="${r.color}" font-size="9" text-anchor="middle" font-weight="700">▮</text>`;
+      }
       // penanda candle yang harganya benar-benar bergerak
       if (Math.abs(chg || 0) >= R_MON_MOVE_PCT) {
         const my = chg > 0 ? padT + 8 : padT + ih + 10;
@@ -1540,18 +1757,20 @@
 
     s += `<text x="${padL}" y="${H - 16}" fill="#64748b" font-size="9">${esc(fmtBar(data[0]))}</text>`;
     s += `<text x="${W - padR}" y="${H - 16}" fill="#64748b" font-size="9" text-anchor="end">${esc(fmtBar(data[data.length - 1]))}</text>`;
-    s += `<text x="${padL}" y="${H - 4}" fill="#475569" font-size="8">tinggi batang = |R| relatif terhadap median klaster · ▲▼ = harga bergerak ≥${R_MON_MOVE_PCT}% · batang pudar = candle berjalan</text>`;
+    s += `<text x="${padL}" y="${H - 4}" fill="#475569" font-size="8">tinggi batang = |R| relatif terhadap median klaster · tembok biasa = warna kalem · RAKSASA = warna menyala + batang lebih lebar (hanya candle yang lolos ambang sinyal) · ▲▼ = harga bergerak ≥${R_MON_MOVE_PCT}% · batang pudar = candle berjalan</text>`;
 
     // ---- tabel candle terakhir ----
-    const rows = data.slice(-12).reverse().map(b => {
-      const r = readR(b, base);
+    const tail = data.slice(-12);
+    const rows = tail.slice().reverse().map(b => {
+      const gi = data.indexOf(b);
+      const r = readR(b, base, gi > 0 ? data[gi - 1] : null);
       const chg = b.priceChgPct;
       return `<tr>
         <td class="t">${esc(fmtBar(b))}${b.partial ? ' <span class="run">berjalan</span>' : ""}</td>
         <td class="n" style="color:${(chg || 0) > 0 ? "#22c55e" : (chg || 0) < 0 ? "#ef4444" : "#94a3b8"};">${chg == null ? "—" : (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%"}</td>
         <td class="n">${b.signedR == null ? "—" : (b.signedR >= 0 ? "+" : "") + b.signedR.toFixed(1)}</td>
         <td class="n">${r.ratio == null ? "—" : r.ratio.toFixed(2) + "×"}</td>
-        <td><span class="pill" style="background:${r.color}22;color:${r.color};">${esc(r.label)}</span></td>
+        <td><span class="pill" style="background:${r.color}22;color:${r.textColor || r.color};">${esc(r.label)}</span></td>
         <td class="d">${esc(r.desc)}</td>
       </tr>`;
     }).join("");
@@ -1677,74 +1896,88 @@
   }
   function downloadCSV(filename, csv) { const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
   // Export SATU file: recap + BARS (harga & R di depan, siap di-chart) + RAW TRADES.
+  // SATU export. Ringkas (KB, bukan MB) tapi cukup untuk analisa ulang:
+  // bars lengkap + level & retest yang terdeteksi + jejak forensik wick.
+  // Raw trades sengaja TIDAK disertakan — itu yang membuat file ~100x lebih
+  // besar. Sebagai gantinya tiap bar membawa high/low versi mentah, jumlah
+  // trade debu, dan trade terbesar, sehingga anomali wick tetap bisa dilacak.
   function exportAll() {
-    const mint = getMintFromUrl(), trades = getSortedTrades();
-    if (!trades.length) { alert("Belum ada transaksi. Jalankan Background Fetch."); return; }
-    const bars = buildBars(trades), cls = classify(bars), lc = latestCluster(bars);
-    const recap = [
-      "# === SMART SEROK — LINTASAN CVD ===",
-      `# Mint: ${mint}`,
-      `# MC context: source=${mcContextSource} current_usd=${cachedMcUsd || ""} effective_supply=${cachedMcPerPrice || ""}`,
-      `# Bar: ${bars.length} (${activeTf.label}) | R×${R_SPIKE_MULT} |R|≥${R_MIN_ABS} | klaster: ${bars.length ? bars[bars.length - 1].cluster + 1 : 0} | klaster terakhir: ${lc.length} bar`,
-      `# Sinyal: ${cls.signal}${cls.phase ? " (" + cls.phase + ")" : ""} | conf ${cls.conf || 0}`,
-      ...((cls.reason || "").split("\n").map(l => "# " + l)),
-      "#",
-      "# === RIWAYAT SINYAL (klaster terakhir) ===",
-      ...(signalHistory(bars).map(h => `#   ${fmtTs(h.t)} WIB  ${h.signal}  grade ${h.grade || "—"}  skor ${h.conf}`)),
-      "#",
-      "# timezone=WIB (Asia/Jakarta, UTC+7) — sama dengan GMGN",
-      "# === BARS (chart: bar_start_wib vs close & R) ===",
-      "bar_start_wib,cluster,close,price_chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,open,high,low,open_mc_usd,high_mc_usd,low_mc_usd,close_mc_usd,buy_sol,sell_sol,vol_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,top_wallet_pct,partial"
-    ];
-    const rBase = rBaseline(bars);
-    const barRows = bars.map(b => [wibIso(b.start), b.cluster, b.close ?? "",
-      b.priceChgPct != null ? b.priceChgPct.toFixed(3) : "", b.R != null ? b.R.toFixed(3) : "",
-      (() => { const r = readR(b, rBase); return r.ratio != null ? r.ratio.toFixed(3) : ""; })(),
-      readR(b, rBase).code,
-      b.cvd.toFixed(3), b.cvdClean.toFixed(3), b.cumCVD.toFixed(3), b.open ?? "", b.high ?? "", b.low ?? "",
-      b.openMc != null ? b.openMc.toFixed(2) : "", b.highMc != null ? b.highMc.toFixed(2) : "",
-      b.lowMc != null ? b.lowMc.toFixed(2) : "", b.closeMc != null ? b.closeMc.toFixed(2) : "",
-      b.buySol.toFixed(2), b.sellSol.toFixed(2), b.volSol.toFixed(2), b.washPct.toFixed(1),
-      b.txCount, b.uniqueMakers, b.taggedMakers, b.freshWallets, b.freshWalletPct.toFixed(1), b.freshTxCount,
-      b.freshBuySol.toFixed(2), b.freshSellSol.toFixed(2), b.topWalletPct.toFixed(1), b.partial ? 1 : 0].join(","));
-    const txSection = ["#", "# === RAW TRADES ===", "date_wib,ts,event,sol,price,maker,tags,tx_hash"];
-    const txRows = trades.map(t => [wibDateOf(t.ts), t.ts, t.event, t.sol.toFixed(6), (t.price || 0).toExponential(8), t.maker, (t.tags || []).join(";"), t.tx_hash].join(","));
-    downloadCSV(`${exportBaseName()}.csv`, [...recap, ...barRows, ...txSection, ...txRows].join("\n"));
-  }
-
-  // Export RINGKAS untuk analisa AI: hanya bars + riwayat sinyal (TANPA raw trades).
-  // File kecil (KB) — mudah upload banyak. Kolom analisa-focused.
-  function exportForAI() {
     const mint = getMintFromUrl(), trades = getSortedTrades();
     if (!trades.length) { alert("Belum ada transaksi. Jalankan Background Fetch."); return; }
     const allBars = buildBars(trades);
     const bars = activeBars(allBars), cls = classify(bars);
-    const hist = signalHistory(bars);
-    const sigLine = hist.map(h => `${fmtTs(h.t)} ${h.signal}(${h.conf})`).join(" | ");
+    const rBase = rBaseline(bars);
+    const scan = scanSignals(bars);
     const L = [];
-    L.push("# SMART SEROK — ANALISA PACK (bars only, no raw trades) — siap untuk AI");
+
+    L.push("# SMART SEROK — ANALISA PACK v" + EXT_VER);
     L.push("# mint=" + mint);
     L.push("# mc_context_source=" + mcContextSource + " current_mc_usd=" + (cachedMcUsd || "") + " effective_supply=" + (cachedMcPerPrice || ""));
     L.push("# timezone=WIB (Asia/Jakarta, UTC+7) — sama dengan GMGN");
-    L.push("# tf=" + activeTf.label + " r_spike=" + R_SPIKE_MULT + "x_prev min_R=" + R_MIN_ABS);
-    L.push("# bars=" + bars.length + " | total_clusters=" + (allBars.length ? allBars[allBars.length - 1].cluster + 1 : 0) + " | active_cluster=" + (selectedCluster == null ? "latest" : selectedCluster));
+    L.push("# tf=" + activeTf.label + " bars=" + bars.length
+      + " | total_clusters=" + (allBars.length ? allBars[allBars.length - 1].cluster + 1 : 0)
+      + " | active_cluster=" + (selectedCluster == null ? "latest" : selectedCluster));
+    L.push("# r_baseline_median=" + (rBase != null ? rBase.toFixed(4) : ""));
     L.push("# current_signal=" + cls.signal + " conf=" + (cls.conf || 0));
-    L.push("# signal_history=" + (sigLine || "(none)"));
-    L.push("# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R|>=10x prev, |R|>=10) yang TERBUKTI: dalam <=6 bar berikutnya R turun <=50%, cumCVD dan harga bergerak >=2% ke arah yang benar. Penyerapan yang harganya menembus level >2% dianggap GAGAL dan tidak jadi level. Level = HIGH-LOW candle penyerapan dalam MARKET CAP. RETEST = harga kembali ke zona level dengan |R| <=1.2x median klaster (tidak ada perlawanan berarti); retest resistance butuh cumCVD naik, retest support butuh cumCVD turun. Jam=WIB.");
-    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,cvd,cvd_clean,cum_cvd,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol");
-    for (const b of bars) {
+    L.push("#");
+
+    // ── LEVEL & SINYAL yang terdeteksi, lengkap dengan buktinya ──
+    L.push("# === LEVEL & SINYAL ===");
+    if (!scan.events.length) {
+      L.push("#   (belum ada level terbukti)");
+    } else {
+      for (const e of scan.events) {
+        const ev = e.ev || {};
+        const mc = ev.lineMc != null ? fmtMarketCap(ev.lineMc) : "—";
+        L.push(`#   ${fmtTs(e.confirm.start)} WIB  ${e.signal}  garis_mc=${mc}`);
+        for (const ln of (buildNarrative(e) || "").split("\n")) L.push("#     " + ln);
+      }
+    }
+    L.push("#");
+    // Status pemantauan retest: kenapa retest belum muncul untuk tiap level.
+    if (scan.levels && scan.levels.length) {
+      L.push("# === STATUS RETEST ===");
+      for (const lv of scan.levels) {
+        const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
+        L.push(`#   ${lv.kind} ${line != null ? fmtMarketCap(line) : "—"} · armed=${lv.armed ? "ya" : "belum"}`);
+        L.push("#     " + retestDiagText(lv));
+      }
+      L.push("#");
+    }
+
+    L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}) yang TERBUKTI: dalam <=${LVL_CONFIRM_BARS} bar berikutnya R runtuh <=${LVL_R_DROP * 100}%, cumCVD dan harga bergerak >=${LVL_MIN_MOVE_PCT}% ke arah yang benar (harga diukur ke TITIK TERJAUH, bukan bar terakhir). Bukti dinilai MAJU bar per bar: begitu terbukti level tidak bisa dibatalkan penembusan yang datang belakangan; penembusan >${LVL_FAIL_PCT}% SEBELUM terbukti = GAGAL, tidak jadi level. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP. RETEST = harga kembali menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) dengan |R| <${LVL_RETEST_R_MAX}x acuan; retest resistance butuh cumCVD naik, retest support butuh cumCVD turun.`);
+    L.push(`# NOTE: R MONITOR. R = |cvd_clean| / |chg_pct|, dinormalisasi ke r_baseline_median. r_state: BEBAS <${R_BAND_FREE}x, NORMAL, SERAP >=${R_BAND_ABSORB}x, TEMBOK_SELLER/TEMBOK_BUYER >=${R_BAND_WALL}x. Akhiran _RAKSASA hanya untuk candle yang lolos ambang sinyal (|R| >=${R_MIN_ABS} DAN lonjakan >=${R_SPIKE_MULT}x bar sebelumnya) sekaligus >=${R_BAND_BLAZE}x acuan; rasio besar tapi |R| kecil TIDAK dihitung raksasa karena tidak akan pernah jadi sinyal. +R = order SELL menahan, -R = order BUY menahan.`);
+    L.push(`# NOTE: FORENSIK WICK. high/low hanya dari trade >=${HL_MIN_SOL} SOL. high_raw/low_raw = versi TANPA saringan itu; kalau berbeda jauh berarti ada trade debu di harga ekstrem (lihat dust_tx). Kolom max_trade_sol = trade terbesar di bar itu.`);
+    L.push("#");
+    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
+
+    for (let bi = 0; bi < bars.length; bi++) {
+      const b = bars[bi];
+      const r = readR(b, rBase, bi > 0 ? bars[bi - 1] : null);
+      // high_raw/low_raw hanya dicetak kalau BEDA dari yang dipakai — kalau sama
+      // dikosongkan supaya file tidak membengkak oleh angka berulang.
+      const hRaw = (b.highRawMc != null && b.highMc != null && Math.abs(b.highRawMc - b.highMc) > b.highMc * 1e-9) ? b.highRawMc.toFixed(2) : "";
+      const lRaw = (b.lowRawMc != null && b.lowMc != null && Math.abs(b.lowRawMc - b.lowMc) > b.lowMc * 1e-9) ? b.lowRawMc.toFixed(2) : "";
       L.push([
         wibIso(b.start), b.cluster,
         b.close != null ? b.close.toExponential(4) : "",
-        b.closeMc != null ? b.closeMc.toFixed(2) : "", b.lowMc != null ? b.lowMc.toFixed(2) : "", b.highMc != null ? b.highMc.toFixed(2) : "",
+        b.closeMc != null ? b.closeMc.toFixed(2) : "",
+        b.lowMc != null ? b.lowMc.toFixed(2) : "",
+        b.highMc != null ? b.highMc.toFixed(2) : "",
         b.priceChgPct != null ? b.priceChgPct.toFixed(2) : "",
         b.signedR != null ? b.signedR.toFixed(3) : (b.R != null ? b.R.toFixed(3) : ""),
+        r.ratio != null ? r.ratio.toFixed(3) : "",
+        r.label.replace(/\s*🔥/g, "").trim().replace(/\s+/g, "_") + (r.blaze ? "_RAKSASA" : ""),
         b.cvd.toFixed(2), b.cvdClean.toFixed(2), b.cumCVD.toFixed(1),
-        b.washPct.toFixed(1), b.txCount, b.uniqueMakers, b.taggedMakers, b.freshWallets, b.freshWalletPct.toFixed(1), b.freshTxCount,
-        b.freshBuySol.toFixed(2), b.freshSellSol.toFixed(2), b.buySol.toFixed(2), b.sellSol.toFixed(2), b.volSol.toFixed(2)
+        hRaw, lRaw, b.dustTx || "", b.maxTradeSol != null ? b.maxTradeSol.toFixed(3) : "",
+        b.washPct.toFixed(1), b.txCount, b.uniqueMakers, b.taggedMakers,
+        b.freshWallets, b.freshWalletPct.toFixed(1), b.freshTxCount,
+        b.freshBuySol.toFixed(2), b.freshSellSol.toFixed(2),
+        b.buySol.toFixed(2), b.sellSol.toFixed(2), b.volSol.toFixed(2),
+        b.partial ? 1 : 0
       ].join(","));
     }
-    downloadCSV(`${exportBaseName()}_AI.csv`, L.join("\n"));
+    downloadCSV(`${exportBaseName()}.csv`, L.join("\n"));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1779,12 +2012,26 @@
 
     const shEl = document.getElementById("gmgn-sighist");
     if (shEl) {
-      const evs = detectEvents(bars).slice().reverse();
-      const sig = evs.map(e => eventKey(e) + ":" + e.conf + ":" + (e.grade || "")).join("|");
+      const scanAll = scanSignals(bars);
+      const evs = scanAll.events.slice().reverse();
+      const lvStatus = (scanAll.levels || []).slice().reverse().map(lv => {
+        const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
+        return { kind: lv.kind, line, txt: retestDiagText(lv), armed: !!lv.armed };
+      });
+      const sig = evs.map(e => eventKey(e) + ":" + e.conf + ":" + (e.grade || "")).join("|")
+        + "||" + lvStatus.map(x => x.txt).join("|");
       if (shEl._sig !== sig) {
         shEl._sig = sig;
+        const diagHtml = !lvStatus.length ? "" :
+          `<div class="gmgn-diag-box"><div class="gmgn-diag-head">Status pemantauan retest</div>` +
+          lvStatus.map(x =>
+            `<div class="gmgn-diag-row"><span class="gmgn-diag-dot" style="background:${x.kind === "resistance" ? "#ef4444" : "#22c55e"}"></span>` +
+            `<div><b>${x.kind === "resistance" ? "Resistance" : "Support"} ${fmtMarketCap(x.line)}</b>` +
+            `<span class="gmgn-diag-arm">${x.armed ? "siap" : "menunggu harga menjauh"}</span>` +
+            `<div class="gmgn-diag-why">${esc(x.txt)}</div></div></div>`).join("") +
+          `</div>`;
         if (!evs.length) {
-          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada level terbukti. Penyerapan yang gagal tidak ditampilkan.</div>`;
+          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada level terbukti. Penyerapan yang gagal tidak ditampilkan.</div>` + diagHtml;
         } else {
           shEl.innerHTML =
             `<div class="gmgn-hist-head"><span>Sinyal & detail</span><span>Metric</span></div>` +
@@ -1810,7 +2057,7 @@
                 <div class="gmgn-hist-tip">${esc(buildNarrative(e))}</div>
                 <div class="gmgn-hist-detail"${open ? "" : " hidden"}>${esc(buildNarrative(e))}</div>
               </div>`;
-            }).join("");
+            }).join("") + diagHtml;
           shEl.querySelectorAll(".gmgn-hist-item").forEach(item => {
             item.addEventListener("click", () => {
               const key = item.getAttribute("data-key");
@@ -1865,7 +2112,6 @@
     if (noteRm) noteRm.style.display = rMonitorMode ? "" : "none";
 
     const dlBtn = document.getElementById("gmgn-btn-dl"); if (dlBtn) dlBtn.disabled = bars.length < 2;
-    const aiBtn = document.getElementById("gmgn-btn-ai"); if (aiBtn) aiBtn.disabled = bars.length < 2;
   }
 
   function paintModeBtn() {
@@ -1909,6 +2155,12 @@
       #gmgn-effort-widget #gmgn-tf-badge { font-size: 12px; font-weight: 700; color: #fbbf24; background: #0f172a; border: 1px solid #334155; padding: 4px 8px; border-radius: 7px; white-space: nowrap; }
       #gmgn-effort-widget #gmgn-sighist { background: #0b1220; border: 1px solid #1e293b; border-radius: 10px; padding: 8px 10px 10px; color: #94a3b8; max-height: min(48vh, 520px); min-height: 180px; overflow-y: auto; overflow-x: hidden; }
       #gmgn-effort-widget .gmgn-hist-empty { padding: 14px 8px; font-size: 14px; color: #64748b; }
+      #gmgn-effort-widget .gmgn-diag-box { margin-top: 8px; border-top: 1px solid #1e293b; padding-top: 8px; }
+      #gmgn-effort-widget .gmgn-diag-head { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+      #gmgn-effort-widget .gmgn-diag-row { display: flex; gap: 7px; align-items: flex-start; padding: 5px 0; font-size: 12px; color: #cbd5e1; }
+      #gmgn-effort-widget .gmgn-diag-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+      #gmgn-effort-widget .gmgn-diag-arm { margin-left: 6px; font-size: 10px; color: #64748b; }
+      #gmgn-effort-widget .gmgn-diag-why { color: #94a3b8; font-size: 11px; margin-top: 2px; line-height: 1.45; }
       #gmgn-effort-widget .gmgn-hist-head { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
       #gmgn-effort-widget .gmgn-hist-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px; grid-template-areas: "sig grade" "meta meta"; gap: 3px 10px; align-items: start; }
       #gmgn-effort-widget .gmgn-hist-grade { grid-area: grade; font-size: 18px; font-weight: 900; letter-spacing: 0.02em; white-space: nowrap; text-align: right; }
@@ -1951,7 +2203,7 @@
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.3</span>
+        <span class="t">🥄 SMART SEROK v9.2.12</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -1964,8 +2216,7 @@
             <button class="gmgn-btn-main gmgn-btn-start" id="gmgn-btn-bgfetch"><span>🌐 Background Fetch</span></button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-live" title="Fetch otomatis 48 jam terakhir, tiap 15 menit"><span>📡 LIVE</span></button>
             <button class="gmgn-btn-main gmgn-btn-start" id="gmgn-btn-scroll"><span>⚡ Auto-Scroll</span></button>
-            <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-dl" disabled>⬇ Export</button>
-            <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-ai" disabled title="Export ringkas (bars+sinyal) untuk analisa AI, tanpa raw trades">⤓ for AI</button>
+            <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-dl" disabled title="Export CSV ringkas: bars + level/sinyal + jejak forensik wick (tanpa raw trades)">⬇ Export CSV</button>
             <button class="gmgn-btn-main gmgn-btn-mode" id="gmgn-btn-mode" title="Ganti antara R MONITOR (baca R murni) dan mode sinyal">📊 R MONITOR</button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-reset">🧹 Reset</button>
           </div>
@@ -1985,15 +2236,21 @@
         <div id="gmgn-sig-tip"></div>
         <div class="gmgn-note" id="gmgn-note-rmon">
           📊 R MONITOR — hanya membaca R, tanpa sinyal dan tanpa kesimpulan otomatis. R = effort (CVD bersih) ÷ result (% harga), dinormalisasi ke median |R| klaster aktif agar bisa dibandingkan antar token.
-          🟢 BEBAS (&lt;0,5×) = harga bergerak nyaris tanpa perlawanan → breakout bersih.
-          🟡 SERAP (≥1,5×) = perlawanan mulai muncul.
-          🔴 TEMBOK (≥4×) = perlawanan kuat, pihak lawan aktif menahan.
-          Batang ke ATAS = +R (BUY diserap seller). Batang ke BAWAH = −R (SELL diserap buyer). Bar dengan effort &lt;1 SOL ditandai SEPI karena R-nya artefak pembagian. Konfirmasi dilakukan manual.
+          🟢 BEBAS (&lt;${R_BAND_FREE}×) = harga bergerak nyaris tanpa perlawanan → jalan bersih.
+          🟡 SERAP (≥${R_BAND_ABSORB}×) = perlawanan mulai muncul.
+          🔴 TEMBOK SELLER (≥${R_BAND_WALL}× di ATAS garis) = order SELL menahan kuat, harga sulit naik.
+          🟢 TEMBOK BUYER (≥${R_BAND_WALL}× di BAWAH garis) = order BUY menahan kuat, harga sulit turun.
+          Tembok dibedakan jadi DUA KELAS yang sengaja dibuat berjarak jauh.
+          <b>TEMBOK BIASA</b> — warna merah bata / hijau lumut yang kalem, batang selebar candle lain, blok latar samar. Ini cuma catatan "ada perlawanan di sini", bukan peringatan.
+          <b>RAKSASA 🔥</b> — merah / hijau MENYALA, batang hampir 2× lebih lebar, blok latar pekat, plus garis tepi dan penanda ▮. Status ini TIDAK bisa diraih hanya dengan rasio besar: candle wajib lolos ambang sinyal lebih dulu — |R| ≥ ${R_MIN_ABS} DAN melonjak ≥ ${R_SPIKE_MULT}× bar sebelumnya — baru boleh menyala di ≥ ${R_BAND_BLAZE}× acuan.
+          Sebabnya, candle ber-rasio tinggi tapi |R| kecil tidak akan pernah melahirkan sinyal. Kalau ia ikut menyala, yang paling mencolok di layar justru yang tidak perlu ditindaklanjuti.
+          Batang ke ATAS = net BELI masuk tapi harga tertahan → SELLER yang menyerap (tekanan jual pasif di atas). Batang ke BAWAH = net JUAL keluar tapi harga tertahan → BUYER yang menyerap (tekanan beli pasif di bawah). Bar dengan effort &lt;${R_MON_MIN_EFFORT} SOL ditandai SEPI karena R-nya artefak pembagian. Konfirmasi dilakukan manual.
         </div>
         <div class="gmgn-note" id="gmgn-note-sinyal">
-          🔴 RESISTANCE / 🟢 SUPPORT TERBENTUK: candle penyerapan (|R|≥10× bar sebelumnya dan |R|≥10) yang TERBUKTI — dalam ≤6 bar berikutnya R runtuh ≤50%, cumCVD dan harga bergerak ≥2% ke arah yang benar. Level = LOW–HIGH candle penyerapan itu, dinyatakan dalam MARKET CAP.
-          Penyerapan yang harganya justru menembus level &gt;2% dianggap GAGAL: tidak jadi level dan tidak ditampilkan.
-          🔵 RETEST RESISTANCE / 🟠 RETEST SUPPORT: harga kembali ke zona level tetapi |R| hanya ≤1,2× median klaster — penjaga level tidak hadir lagi. Retest resistance butuh cumCVD naik; retest support butuh cumCVD turun.
+          🔴 RESISTANCE / 🟢 SUPPORT TERBENTUK: candle penyerapan (|R| ≥${R_SPIKE_MULT}× bar sebelumnya DAN |R| ≥${R_MIN_ABS}) yang TERBUKTI — dalam ≤${LVL_CONFIRM_BARS} bar berikutnya R runtuh ≤${LVL_R_DROP * 100}%, cumCVD dan harga bergerak ≥${LVL_MIN_MOVE_PCT}% ke arah yang benar. Harga diukur ke TITIK TERJAUH yang dicapai, bukan ke bar terakhir — level tetap sah walau harga memantul balik setelahnya.
+          GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dinyatakan dalam MARKET CAP. HIGH/LOW hanya dihitung dari trade ≥${HL_MIN_SOL} SOL supaya trade debu tidak menggeser garis.
+          Penyerapan yang harganya justru menembus level &gt;${LVL_FAIL_PCT}% dianggap GAGAL: tidak jadi level dan tidak ditampilkan.
+          🔵 RETEST RESISTANCE / 🟠 RETEST SUPPORT: harga balik menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) tetapi |R| hanya &lt;${LVL_RETEST_R_MAX}× acuan — penjaga level tidak hadir lagi. Retest resistance butuh cumCVD naik (kemungkinan tembus ke atas); retest support butuh cumCVD turun (kemungkinan jebol ke bawah).
         </div>
       </div>
     </div>`;
@@ -2012,7 +2269,6 @@
     document.getElementById("gmgn-btn-reset").addEventListener("click", () => { capturedTrades.clear(); walletTagRegistry.clear(); detectedFromTs = null; detectedToTs = null; selectedCluster = null; cachedMcUsd = 0; cachedSupply = 0; cachedPriceUsd = 0; cachedMcPerPrice = 0; cachedHolderSupply = 0; cachedTokenSymbol = ""; mcContextSource = "none"; holderFetchMint = null; holderFetchLastAt = 0; Object.assign(captureStats, { requests: 0, seen: 0, recorded: 0, dup: 0, outOfRange: 0, noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "Direset manual", lastTs: Date.now() }); updateUI(); });
     document.getElementById("gmgn-cluster").addEventListener("change", (e) => { selectedCluster = e.target.value === "" ? null : parseInt(e.target.value); updateUI(); });
     document.getElementById("gmgn-btn-dl").addEventListener("click", exportAll);
-    document.getElementById("gmgn-btn-ai").addEventListener("click", exportForAI);
     document.getElementById("gmgn-btn-min").addEventListener("click", () => { const body = document.getElementById("gmgn-body"), btn = document.getElementById("gmgn-btn-min"); if (body.style.display === "none") { body.style.display = "flex"; btn.innerText = "—"; } else { body.style.display = "none"; btn.innerText = "+"; } });
     // drag-to-move via header (tombol di header tetap bisa diklik)
     const hdr = host.querySelector(".gmgn-hdr");

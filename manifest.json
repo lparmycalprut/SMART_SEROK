@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.3",
-  "description": "SMART SEROK v9.2.3 — LEVEL ENGINE: penyerapan wajib |R|>=50 dan >=10x bar sebelumnya; pembuktian pakai titik terjauh.",
+  "version": "9.2.12",
+  "description": "SMART SEROK v9.2.12 — satu tombol export; file ringkas (KB) berisi bars + level/sinyal + jejak forensik wick.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
