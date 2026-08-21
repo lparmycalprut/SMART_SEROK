@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gmgn_trading_bot.config import load_config
+from gmgn_trading_bot.config import load_config, load_env_file
 from gmgn_trading_bot.models import Candle, WatchToken
 from gmgn_trading_bot.signals import detect_chart_signals
 from gmgn_trading_bot.state import StateStore
@@ -47,6 +47,15 @@ class SignalTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_env_file_loads_secrets_without_overriding_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bot.env"
+            path.write_text('GMGN_API_KEY="from-file"\nTELEGRAM_CHAT_ID=-123\n')
+            with patch.dict(os.environ, {"GMGN_API_KEY": "from-process"}, clear=True):
+                self.assertTrue(load_env_file(path))
+                self.assertEqual(os.environ["GMGN_API_KEY"], "from-process")
+                self.assertEqual(os.environ["TELEGRAM_CHAT_ID"], "-123")
+
     def test_disabled_empty_watchlist_slot_is_ignored(self):
         text = '''
 [monitor]

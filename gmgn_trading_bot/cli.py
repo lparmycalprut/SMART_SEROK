@@ -4,13 +4,14 @@ import argparse
 import logging
 import sys
 
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, load_env_file
 from .monitor import WatchlistMonitor
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SMART SEROK GMGN watchlist monitor")
     parser.add_argument("--config", default="config.toml", help="path config TOML")
+    parser.add_argument("--env-file", default="bot.env", help="file KEY=VALUE untuk secret (default: bot.env)")
     parser.add_argument("--once", action="store_true", help="jalankan satu siklus lalu keluar")
     parser.add_argument("--check-config", action="store_true", help="validasi konfigurasi tanpa request")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
@@ -20,6 +21,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
     try:
+        load_env_file(args.env_file)
         config = load_config(args.config)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)

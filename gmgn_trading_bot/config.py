@@ -32,6 +32,34 @@ class ConfigError(ValueError):
     pass
 
 
+def load_env_file(path: str | Path) -> bool:
+    """Load a simple KEY=VALUE file without overriding existing environment.
+
+    This intentionally supports the subset used by bot.env and works equally on
+    Windows, Linux, and macOS without a third-party dotenv dependency.
+    """
+    env_path = Path(path)
+    if not env_path.is_file():
+        return False
+    for line_number, raw_line in enumerate(env_path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            raise ConfigError(f"{env_path}:{line_number}: format environment harus KEY=VALUE")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
+            raise ConfigError(f"{env_path}:{line_number}: nama environment tidak valid: {key!r}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+    return True
+
+
 def load_config(path: str | Path) -> BotConfig:
     config_path = Path(path)
     try:

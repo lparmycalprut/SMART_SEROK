@@ -1,4 +1,4 @@
-# gmgn_trading_bot — Chart Monitor v0.1.1
+# gmgn_trading_bot — Chart Monitor v0.1.2
 
 Bot 24/7 untuk memantau watchlist mint Solana melalui GMGN OpenAPI dan mengirim
 alert Telegram opsional.
@@ -26,9 +26,8 @@ cp config.example.toml config.toml
 cp bot.env.example bot.env
 chmod 600 bot.env
 
-# Edit watchlist di config.toml dan isi secret di bot.env, lalu muat environment.
-set -a; source bot.env; set +a
-
+# Edit watchlist di config.toml dan isi secret di bot.env.
+# bot.env dimuat otomatis oleh bot pada semua OS.
 python -m gmgn_trading_bot.cli --config config.toml --check-config
 python -m gmgn_trading_bot.cli --config config.toml --once
 python -m gmgn_trading_bot.cli --config config.toml
@@ -47,11 +46,17 @@ aman adalah menjalankan perintah dalam satu baris:
 
 ```powershell
 Copy-Item config.example.toml config.toml
-$env:GMGN_API_KEY = "isi_api_key_gmgn_di_sini"
+Copy-Item bot.env.example bot.env
+notepad config.toml
+notepad bot.env
 python -m gmgn_trading_bot.cli --config config.toml --check-config
 python -m gmgn_trading_bot.cli --config config.toml --once
 python -m gmgn_trading_bot.cli --config config.toml
 ```
+
+Bot memuat `bot.env` secara otomatis. Isi API key dan Telegram di file tersebut;
+tidak perlu menjalankan `$env:...` setiap membuka PowerShell baru. File `bot.env`
+diabaikan Git dan tidak dimasukkan ke ZIP hasil portal.
 
 Jika ingin beberapa baris, gunakan backtick PowerShell (`` ` ``), bukan
 backslash. Backtick harus menjadi karakter terakhir pada baris—jangan beri spasi
@@ -63,8 +68,8 @@ python -m gmgn_trading_bot.cli `
   --once
 ```
 
-Environment variable PowerShell hanya aktif di jendela terminal tersebut. Untuk
-Telegram opsional:
+Sebagai alternatif, environment PowerShell dapat dipakai untuk override sementara
+(nilainya menang atas `bot.env`), tetapi hanya aktif di terminal tersebut:
 
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = "..."

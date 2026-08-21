@@ -159,7 +159,7 @@ BOT_FILES = [
     "gmgn_trading_bot/state.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.1.1"
+BOT_VERSION = "0.1.2"
 
 
 def ext_version():
@@ -304,7 +304,7 @@ PAGE = """<!doctype html>
       <b>Mulai:</b>
       1. Ekstrak ZIP dan buka folder <code>gmgn_trading_bot</code>
       2. Salin <code>config.example.toml</code> → <code>config.toml</code>, lalu edit watchlist
-      3. Salin <code>bot.env.example</code> → <code>bot.env</code>, isi secret, lalu jalankan <code>set -a; source bot.env; set +a</code>
+      3. Salin <code>bot.env.example</code> → <code>bot.env</code> dan isi secret; bot memuatnya otomatis di semua OS
       4. Jalankan Linux/macOS: <code>python3 -m gmgn_trading_bot.cli --config config.toml</code>
       <br><b>Windows PowerShell:</b> gunakan satu baris <code>python -m gmgn_trading_bot.cli --config config.toml --once</code>. Jangan gunakan <code>\</code> sebagai pemisah baris.
       <br><b>Auto-trade OFF.</b> Detail lengkap ada di <code>BOT_README.md</code>.
