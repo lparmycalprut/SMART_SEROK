@@ -253,6 +253,16 @@ class TelegramTests(unittest.TestCase):
             ["add", "remove", "list", "pause", "resume", "refresh", "levels", "status", "test", "help"],
         )
 
+    def test_get_updates_read_timeout_is_normal_empty_poll(self):
+        notifier = TelegramNotifier("token", "123")
+        with patch(
+            "gmgn_trading_bot.notifier.urllib.request.urlopen",
+            side_effect=TimeoutError("The read operation timed out"),
+        ) as api, patch("gmgn_trading_bot.notifier.time.sleep") as sleep:
+            self.assertEqual(notifier.get_updates(timeout=5), [])
+        self.assertEqual(api.call_count, 1)
+        sleep.assert_not_called()
+
     def test_retries_transient_telegram_handshake_failure(self):
         class Response(io.BytesIO):
             def __enter__(self): return self

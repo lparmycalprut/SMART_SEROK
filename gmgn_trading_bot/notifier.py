@@ -48,6 +48,11 @@ class TelegramNotifier:
                     continue
                 raise RuntimeError(f"Telegram {method} gagal: {description}") from exc
             except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as exc:
+                # getUpdates adalah long polling. Read timeout berarti satu siklus
+                # berakhir tanpa update, bukan kegagalan command atau Telegram.
+                is_timeout = isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in str(exc).lower()
+                if method == "getUpdates" and is_timeout:
+                    return []
                 last_error = exc
                 if attempt < 2:
                     LOG.warning("Telegram %s koneksi gagal; retry %d/2: %s", method, attempt + 1, exc)

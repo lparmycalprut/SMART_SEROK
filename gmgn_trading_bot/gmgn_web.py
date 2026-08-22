@@ -68,7 +68,7 @@ class GMGNWebClient:
             "Cookie": self.cookie,
             "Origin": "https://gmgn.ai",
             "Referer": f"https://gmgn.ai/sol/token/{mint}",
-            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.8",
+            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.9",
         })
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -90,7 +90,7 @@ class GMGNWebClient:
         request = urllib.request.Request(url, headers={
             "Accept": "application/json, text/plain, */*", "Cookie": self.cookie,
             "Origin": "https://gmgn.ai", "Referer": f"https://gmgn.ai/sol/token/{mint}",
-            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.8",
+            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.9",
         })
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
