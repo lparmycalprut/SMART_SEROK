@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
 from gmgn_trading_bot.engine import (
-    Bar, SIG_RESISTANCE, SIG_RETEST_RES, SIG_RETEST_SUP, SIG_SUPPORT, scan_smart_serok,
+    Bar, Trade, SIG_RESISTANCE, SIG_RETEST_RES, SIG_RETEST_SUP, SIG_SUPPORT, build_bars, scan_smart_serok,
 )
 from gmgn_trading_bot.gmgn import GMGNClient
 from gmgn_trading_bot.gmgn_web import GMGNWebClient, normalize_trade
@@ -64,6 +64,16 @@ enabled = true
 
 
 class SmartSerokEngineTests(unittest.TestCase):
+    def test_bar_history_matches_extension_168_bar_limit(self):
+        trades = [
+            Trade(str(i), "A" * 32, f"maker{i}", "buy", 1.0, 1.0 + i / 1000, i * 3600, f"tx{i}")
+            for i in range(170)
+        ]
+        bars = build_bars(trades, 171 * 3600)
+        self.assertEqual(len(bars), 168)
+        self.assertEqual(bars[0].start, 2 * 3600)
+        self.assertEqual(bars[0].cum_cvd, 1.0)
+
     def test_resistance_and_retest_are_detected(self):
         def bar(i, close, high, low, cvd, r, cum):
             return Bar(i * 3600, 100, high, low, close, cvd, 20, abs(r), r, False, cum)
@@ -108,6 +118,17 @@ class RawTradeTests(unittest.TestCase):
         self.assertEqual(trade.event, "buy")
         self.assertIn("mev_bot", trade.tags)
 
+    def test_normalize_matches_extension_sol_correction_and_object_tags(self):
+        trade = normalize_trade("A" * 32, {
+            "trader": "wallet", "direction": "sell", "created_at": 1_700_000_000,
+            "quote_amount": "1000", "amount_usd": "160", "price_usd": "0.001",
+            "id": "row", "maker_tags": {"mev_bot": True, "ignored": False},
+        })
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.sol, 1.0)
+        self.assertEqual(trade.event, "sell")
+        self.assertEqual(trade.tags, ("mev_bot",))
+
     def test_paginates_until_cursor_is_empty(self):
         class Response(io.BytesIO):
             headers = type("Headers", (), {"get_content_charset": lambda self: "utf-8"})()
@@ -129,6 +150,41 @@ class RawTradeTests(unittest.TestCase):
             trades = client.fetch_trades("A" * 32, 1_699_999_000, 1_700_001_000)
         self.assertEqual(len(trades), 1)
         self.assertEqual(request.call_count, 2)
+
+    def test_holder_context_matches_extension_tags_and_supply(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): self.close()
+        payload = {"code": 0, "data": {"holders": [{
+            "address": "wallet", "amount_percentage": "0.1", "amount_cur": "1000",
+            "tags": {"mev_bot": True},
+        }]}}
+        client = GMGNWebClient("cookie=value")
+        with patch(
+            "gmgn_trading_bot.gmgn_web.urllib.request.urlopen",
+            return_value=Response(json.dumps(payload).encode()),
+        ):
+            tags, supply = client.fetch_holder_context("A" * 32)
+        self.assertEqual(tags, {"wallet": {"mev_bot"}})
+        self.assertEqual(supply, 10_000.0)
+
+    def test_full_window_first_page_omits_from_like_extension(self):
+        class Response(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *args): self.close()
+        item = {
+            "maker": "wallet", "event": "buy", "timestamp": 1_700_000_000,
+            "quote_amount": "1", "price_usd": "0.1", "tx_hash": "tx-full",
+        }
+        response = Response(json.dumps({"code": 0, "data": {"history": [item], "next": "more"}}).encode())
+        client = GMGNWebClient("cookie=value")
+        with patch("gmgn_trading_bot.gmgn_web.urllib.request.urlopen", return_value=response) as request:
+            trades = client.fetch_trades(
+                "A" * 32, 1_700_000_000, 1_700_001_000, full_window=True
+            )
+        self.assertEqual(len(trades), 1)
+        url = request.call_args.args[0].full_url
+        self.assertNotIn("from=", url)
 
 
 class GMGNClientTests(unittest.TestCase):
@@ -237,6 +293,16 @@ class StateTests(unittest.TestCase):
             tables = {row[0] for row in store.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"watchlist", "trades", "kv"}.issubset(tables))
             self.assertTrue(store.was_sent("old-event"))
+            store.close()
+
+    def test_refresh_resets_initialization_for_historical_suppression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / "state.db")
+            mint = "A" * 32
+            store.add_watch(mint, "TEST")
+            store.set_kv(f"initialized:{mint}", "1")
+            self.assertTrue(store.request_refresh(mint))
+            self.assertEqual(store.get_kv(f"initialized:{mint}"), "")
             store.close()
 
     def test_persists_dedup(self):

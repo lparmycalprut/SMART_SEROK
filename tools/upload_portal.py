@@ -161,7 +161,7 @@ BOT_FILES = [
     "gmgn_trading_bot/telegram_control.py",
     "tests/test_bot.py",
 ]
-BOT_VERSION = "0.2.7"
+BOT_VERSION = "0.2.8"
 
 
 def ext_version():

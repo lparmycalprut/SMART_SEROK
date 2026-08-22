@@ -1,4 +1,4 @@
-# gmgn_trading_bot v0.2.7 — SMART SEROK Level Engine
+# gmgn_trading_bot v0.2.8 — SMART SEROK Level Engine
 
 Bot 24/7 Solana dengan empat sinyal saja:
 
@@ -17,6 +17,10 @@ Bot 24/7 Solana dengan empat sinyal saja:
 
 Raw trades memakai endpoint web yang sama dengan ekstensi, tetapi bukan OpenAPI
 publik. Cookie dapat kedaluwarsa. Bot akan melaporkan error lewat `/status`.
+Normalisasi SOL/USD, initial pagination tanpa parameter `from`, holder-tag
+registry, holder-supply market-cap, dan batas 168 bar dipadankan dengan
+`content.js`. Saat skema normalisasi berubah, database raw dibangun ulang 48 jam
+tanpa mengirim alert historis.
 
 ## Setup Windows + VS Code
 
@@ -32,7 +36,7 @@ python bot.py --once
 python bot.py
 ```
 
-Mulai v0.2.7, ZIP hanya berisi source bot dan tidak membawa `bot.env`,
+Mulai v0.2.8, ZIP hanya berisi source bot dan tidak membawa `bot.env`,
 `config.toml`, file contoh, database, maupun updater PowerShell. Hentikan bot,
 lalu salin dan timpa source lama langsung dengan isi ZIP terbaru.
 

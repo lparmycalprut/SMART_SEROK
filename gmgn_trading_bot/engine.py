@@ -21,6 +21,7 @@ RETEST_MIN_GAP = 2
 RETEST_R_MAX = 1.5
 R_MON_MIN_EFFORT = 1.0
 HL_MIN_SOL = 0.001
+MAX_BARS = 168
 WASH_WINDOW_SEC = 60
 NOISE_TAGS = {"sandwich_bot", "mev_bot", "mev"}
 
@@ -184,6 +185,19 @@ def build_bars(trades: list[Trade], now_ts: int, bar_sec: int = 3600, mc_per_pri
             low * mc_per_price if mc_per_price > 0 else None,
         ))
         previous_start = start
+
+    # content.js membatasi 168 bar sebelum cumCVD/cluster final dihitung.
+    bars = bars[-MAX_BARS:]
+    cumulative = 0.0
+    cluster = 0
+    previous_start = None
+    for bar in bars:
+        if previous_start is not None and bar.start - previous_start > 6 * bar_sec:
+            cluster += 1
+        cumulative += bar.cvd_clean
+        bar.cum_cvd = cumulative
+        bar.cluster = cluster
+        previous_start = bar.start
     return bars
 
 

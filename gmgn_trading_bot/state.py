@@ -99,8 +99,17 @@ class StateStore:
     def request_refresh(self, mint: str) -> bool:
         with self.lock:
             cursor = self.connection.execute("UPDATE watchlist SET refresh_requested=1 WHERE mint=?", (mint,))
+            if cursor.rowcount > 0:
+                self.connection.execute("DELETE FROM kv WHERE key=?", (f"initialized:{mint}",))
             self.connection.commit()
             return cursor.rowcount > 0
+
+    def request_refresh_all(self, *, suppress_history: bool = False) -> None:
+        with self.lock:
+            self.connection.execute("UPDATE watchlist SET refresh_requested=1")
+            if suppress_history:
+                self.connection.execute("DELETE FROM kv WHERE key LIKE 'initialized:%'")
+            self.connection.commit()
 
     def mark_fetch(self, mint: str, error: str | None = None) -> None:
         with self.lock:
@@ -113,14 +122,25 @@ class StateStore:
     def add_trades(self, trades: list[Trade]) -> int:
         with self.lock:
             before = self.connection.total_changes
-            self.connection.executemany(
-                """INSERT OR IGNORE INTO trades
-                   (trade_id,mint,maker,event,sol,price,ts,tx_hash,tags_json)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                [(x.trade_id, x.mint, x.maker, x.event, x.sol, x.price, x.ts, x.tx_hash, json.dumps(x.tags)) for x in trades],
-            )
+            self._insert_trades(trades)
             self.connection.commit()
             return self.connection.total_changes - before
+
+    def replace_trades(self, mint: str, trades: list[Trade]) -> int:
+        """Atomically replace one token after a successful full-window fetch."""
+        with self.lock:
+            self.connection.execute("DELETE FROM trades WHERE mint=?", (mint,))
+            self._insert_trades(trades)
+            self.connection.commit()
+            return len(trades)
+
+    def _insert_trades(self, trades: list[Trade]) -> None:
+        self.connection.executemany(
+            """INSERT OR IGNORE INTO trades
+               (trade_id,mint,maker,event,sol,price,ts,tx_hash,tags_json)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            [(x.trade_id, x.mint, x.maker, x.event, x.sol, x.price, x.ts, x.tx_hash, json.dumps(x.tags)) for x in trades],
+        )
 
     def get_trades(self, mint: str, since_ts: int = 0) -> list[Trade]:
         with self.lock:

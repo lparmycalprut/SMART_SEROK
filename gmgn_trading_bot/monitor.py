@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .config import BotConfig
-from .engine import Level, build_bars, event_message, fmt_mc, fmt_wib, scan_smart_serok
+from .engine import Level, Trade, build_bars, event_message, fmt_mc, fmt_wib, scan_smart_serok
 from .gmgn import GMGNClient, GMGNError
 from .gmgn_web import GMGNWebClient
 from .notifier import TelegramNotifier
@@ -25,12 +25,18 @@ class WatchlistMonitor:
         self.raw_client = GMGNWebClient(config.web_cookie, config.web_host)
         self.state = StateStore(config.db_path)
         self.state.seed_watchlist(config.watchlist)
+        if self.state.get_kv("raw_normalizer_version") != "2":
+            # v2 menyamakan koreksi SOL/pagination dengan content.js. Rebuild
+            # dilakukan sebagai backfill historis agar tidak memicu alert lama.
+            self.state.request_refresh_all(suppress_history=True)
+            self.state.set_kv("raw_normalizer_version", "2")
         self.notifier = TelegramNotifier(config.telegram_token, config.telegram_chat_id)
         self.controller = TelegramController(self.notifier, self.state, self) if self.notifier.enabled else None
         self.started_at = time.time()
         self.last_cycle_at = 0.0
         self.last_error = ""
         self.level_cache: dict[str, tuple[str, list[Level]]] = {}
+        self.holder_cache: dict[str, tuple[float, dict[str, set[str]], float]] = {}
         self.cache_lock = threading.RLock()
 
     def run_cycle(self) -> None:
@@ -47,17 +53,21 @@ class WatchlistMonitor:
         # Terpisah dari keberadaan raw trade: jika proses gagal setelah INSERT tetapi
         # sebelum scan selesai, siklus berikutnya tetap dianggap initial backfill.
         first_backfill = self.state.get_kv(f"initialized:{mint}") != "1"
-        from_ts = now_ts - self.config.backfill_hours * 3600 if force_refresh or first_backfill else max(0, (previous_max or 0) + 1)
+        full_window = bool(force_refresh or first_backfill)
+        from_ts = now_ts - self.config.backfill_hours * 3600 if full_window else max(0, (previous_max or 0) + 1)
         try:
-            trades = self.raw_client.fetch_trades(mint, from_ts, now_ts)
-            added = self.state.add_trades(trades)
+            wallet_tags, holder_supply = self._holder_context(mint)
+            trades = self.raw_client.fetch_trades(mint, from_ts, now_ts, full_window=full_window)
+            self._enrich_holder_tags(trades, wallet_tags)
+            added = self.state.replace_trades(mint, trades) if full_window else self.state.add_trades(trades)
             self.state.mark_fetch(mint)
             self.state.set_kv(f"error_alert:{mint}", "")
             all_trades = self.state.get_trades(mint)
             if not all_trades:
                 LOG.info("%s: raw trade belum tersedia", symbol)
                 return
-            mc_per_price = self._mc_per_price(mint)
+            self._enrich_holder_tags(all_trades, wallet_tags)
+            mc_per_price = holder_supply if holder_supply > 0 else self._mc_per_price(mint)
             bars = build_bars(all_trades, now_ts - self.config.close_grace_seconds, 3600, mc_per_price)
             events, levels = scan_smart_serok(mint, symbol, bars)
             with self.cache_lock:
@@ -101,6 +111,25 @@ class WatchlistMonitor:
                     self.state.set_kv(f"error_alert:{mint}", str(exc))
                 except Exception as notify_exc:
                     LOG.error("gagal mengirim provider error ke Telegram: %s", notify_exc)
+
+    def _holder_context(self, mint: str) -> tuple[dict[str, set[str]], float]:
+        cached = self.holder_cache.get(mint)
+        if cached and time.time() - cached[0] < 120:
+            return cached[1], cached[2]
+        try:
+            tags, supply = self.raw_client.fetch_holder_context(mint)
+            self.holder_cache[mint] = (time.time(), tags, supply)
+            return tags, supply
+        except GMGNError as exc:
+            LOG.warning("holder context %s gagal; lanjut dengan tag raw trade: %s", mint[:8], exc)
+            return ({}, 0.0) if not cached else (cached[1], cached[2])
+
+    @staticmethod
+    def _enrich_holder_tags(trades: list[Trade], wallet_tags: dict[str, set[str]]) -> None:
+        for trade in trades:
+            extra = wallet_tags.get(trade.maker)
+            if extra:
+                trade.tags = tuple(sorted(set(trade.tags).union(extra)))
 
     def resolve_symbol(self, mint: str) -> str:
         """Resolve symbol from GMGN metadata before persisting a Telegram /add."""
