@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import os
@@ -5,7 +6,9 @@ import sqlite3
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
@@ -64,6 +67,26 @@ enabled = true
 
 
 class SmartSerokEngineTests(unittest.TestCase):
+    def test_babyshib_export_has_no_level_or_retest(self):
+        fixture = Path(__file__).parent / "fixtures" / "babyshib_v9213_no_levels.csv"
+        lines = fixture.read_text(encoding="utf-8-sig").splitlines()
+        rows = csv.DictReader(line for line in lines if line.strip() and not line.startswith("#"))
+        bars = []
+        for row in rows:
+            close = float(row["close_mc_usd"])
+            change = float(row["chg_pct"])
+            signed_r = float(row["R"])
+            start = int(datetime.fromisoformat(row["bar_wib"]).replace(tzinfo=ZoneInfo("Asia/Jakarta")).timestamp())
+            bars.append(Bar(
+                start, close / (1 + change / 100), float(row["high_mc_usd"]),
+                float(row["low_mc_usd"]), close, float(row["cvd_clean"]),
+                float(row["vol_sol"]), abs(signed_r), signed_r, row["partial"] == "1",
+                float(row["cum_cvd"]), int(row["cluster"]),
+            ))
+        events, levels = scan_smart_serok("5nZMRLSFnA3oWXXswKyyaW5or2FFy34tkTUhtkWPpump", "BABYSHIB", bars)
+        self.assertEqual(events, [])
+        self.assertEqual(levels, [])
+
     def test_bar_history_matches_extension_168_bar_limit(self):
         trades = [
             Trade(str(i), "A" * 32, f"maker{i}", "buy", 1.0, 1.0 + i / 1000, i * 3600, f"tx{i}")
