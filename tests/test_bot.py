@@ -152,6 +152,16 @@ class RawTradeTests(unittest.TestCase):
         self.assertEqual(trade.event, "sell")
         self.assertEqual(trade.tags, ("mev_bot",))
 
+    def test_zero_values_do_not_fall_through_nullish_fallbacks(self):
+        trade = normalize_trade("A" * 32, {
+            "maker": "wallet", "event": "buy", "timestamp": 1_700_000_000,
+            "quote_amount": 0, "amount_sol": 99, "price_usd": 0, "price": 1.25,
+            "tx_hash": "zero-fields",
+        })
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.sol, 0.0)
+        self.assertEqual(trade.price, 0.0)
+
     def test_paginates_until_cursor_is_empty(self):
         class Response(io.BytesIO):
             headers = type("Headers", (), {"get_content_charset": lambda self: "utf-8"})()

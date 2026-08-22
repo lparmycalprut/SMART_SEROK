@@ -25,11 +25,11 @@ class WatchlistMonitor:
         self.raw_client = GMGNWebClient(config.web_cookie, config.web_host)
         self.state = StateStore(config.db_path)
         self.state.seed_watchlist(config.watchlist)
-        if self.state.get_kv("raw_normalizer_version") != "2":
-            # v2 menyamakan koreksi SOL/pagination dengan content.js. Rebuild
-            # dilakukan sebagai backfill historis agar tidak memicu alert lama.
+        if self.state.get_kv("raw_normalizer_version") != "3":
+            # v3 menyamakan operator nullish (`??`) content.js. Nilai nol tidak
+            # boleh jatuh ke field fallback karena dapat mengubah SOL dan OHLC.
             self.state.request_refresh_all(suppress_history=True)
-            self.state.set_kv("raw_normalizer_version", "2")
+            self.state.set_kv("raw_normalizer_version", "3")
         self.notifier = TelegramNotifier(config.telegram_token, config.telegram_chat_id)
         self.controller = TelegramController(self.notifier, self.state, self) if self.notifier.enabled else None
         self.started_at = time.time()

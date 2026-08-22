@@ -20,6 +20,14 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+def _nullish(item: dict[str, Any], *keys: str) -> Any:
+    """Match JavaScript's `a ?? b`: zero/empty values do not fall through."""
+    for key in keys:
+        if key in item and item[key] is not None:
+            return item[key]
+    return 0
+
+
 def _collect_tags(value: Any, output: set[str]) -> None:
     if value is None:
         return
@@ -68,7 +76,7 @@ class GMGNWebClient:
             "Cookie": self.cookie,
             "Origin": "https://gmgn.ai",
             "Referer": f"https://gmgn.ai/sol/token/{mint}",
-            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.9",
+            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.10",
         })
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -90,7 +98,7 @@ class GMGNWebClient:
         request = urllib.request.Request(url, headers={
             "Accept": "application/json, text/plain, */*", "Cookie": self.cookie,
             "Origin": "https://gmgn.ai", "Referer": f"https://gmgn.ai/sol/token/{mint}",
-            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.9",
+            "User-Agent": "Mozilla/5.0 gmgn_trading_bot/0.2.10",
         })
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -192,32 +200,30 @@ def normalize_trade(mint: str, item: dict[str, Any]) -> Trade | None:
         event = None
     if not maker or event is None:
         return None
-    ts = int(_number(
-        item.get("timestamp") or item.get("time") or item.get("ts") or item.get("created_at")
-        or item.get("create_time") or item.get("block_time") or item.get("trade_time") or 0
-    ))
+    ts = int(_number(_nullish(
+        item, "timestamp", "time", "ts", "created_at", "create_time", "block_time", "trade_time"
+    )))
     if ts > 1_000_000_000_000:
         ts //= 1000
-    sol = _number(
-        item.get("quote_amount") or item.get("amount_sol") or item.get("sol_amount")
-        or item.get("quote_volume") or item.get("sol") or item.get("quote") or 0
-    )
-    base_amount = _number(
-        item.get("base_amount") or item.get("token_amount") or item.get("amount")
-        or item.get("token_volume") or item.get("token") or 0
-    )
-    amount_usd = _number(
-        item.get("amount_usd") or item.get("usd_amount") or item.get("cost_usd")
-        or item.get("usd") or item.get("quote_value") or 0
-    )
-    price = _number(item.get("price_usd") or item.get("price") or 0)
+    sol = _number(_nullish(
+        item, "quote_amount", "amount_sol", "sol_amount", "quote_volume", "sol", "quote"
+    ))
+    base_amount = _number(_nullish(
+        item, "base_amount", "token_amount", "amount", "token_volume", "token"
+    ))
+    amount_usd = _number(_nullish(
+        item, "amount_usd", "usd_amount", "cost_usd", "usd", "quote_value"
+    ))
+    price = _number(_nullish(item, "price_usd", "price"))
     if amount_usd <= 0 and base_amount > 0 and price > 0:
         amount_usd = base_amount * price
     if amount_usd > 0 and sol > 0:
         implied_sol_price = amount_usd / sol
         if implied_sol_price < 10.0 or implied_sol_price > 500.0:
             sol = amount_usd / 160.0
-    if ts <= 0 or sol < 0 or price <= 0:
+    # content.js tetap menyimpan trade price=0 untuk CVD/volume; hanya OHLC yang
+    # menyaring price <= 0 saat buildBars.
+    if ts <= 0 or sol < 0:
         return None
     tx_hash = str(item.get("tx_hash") or item.get("tx_id") or item.get("signature") or item.get("hash") or item.get("id") or "")
     if not tx_hash:
