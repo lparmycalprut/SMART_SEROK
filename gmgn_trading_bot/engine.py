@@ -279,13 +279,42 @@ def _touches(bar: Bar, level: Level) -> bool:
     return bar.high >= level.line - pad and bar.low <= level.line + pad
 
 
-def scan_smart_serok(mint: str, symbol: str, input_bars: list[Bar]) -> tuple[list[SignalEvent], list[Level]]:
+def candidate_starts_from_price_reference(bars: list[Bar], change_pct_by_start: dict[int, float]) -> set[int]:
+    """Candidates that also pass R thresholds using an independent price feed.
+
+    Raw trades remain the source of CVD and level lines. This second calculation
+    only prevents malformed/mutable raw prices from exploding R around a
+    near-zero open-to-close change.
+    """
+    allowed: set[int] = set()
+    for index in range(1, len(bars)):
+        bar, previous = bars[index], bars[index - 1]
+        change = change_pct_by_start.get(bar.start)
+        previous_change = change_pct_by_start.get(previous.start)
+        if change is None or previous_change is None or abs(change) <= 1e-9 or abs(previous_change) <= 1e-9:
+            continue
+        current_r = abs(bar.cvd_clean) / abs(change)
+        previous_r = abs(previous.cvd_clean) / abs(previous_change)
+        if (
+            not bar.partial and abs(bar.cvd_clean) >= ABSORB_MIN_CVD
+            and previous_r > 1e-9 and current_r >= R_MIN_ABS
+            and current_r / previous_r >= R_SPIKE_MULT
+        ):
+            allowed.add(bar.start)
+    return allowed
+
+
+def scan_smart_serok(
+    mint: str, symbol: str, input_bars: list[Bar], allowed_candidate_starts: set[int] | None = None,
+) -> tuple[list[SignalEvent], list[Level]]:
     bars = latest_cluster(input_bars)
     events: list[SignalEvent] = []
     levels: list[Level] = []
     baseline = _baseline(bars)
     for index, bar in enumerate(bars):
         candidate = _absorption(bars, index)
+        if candidate and allowed_candidate_starts is not None and bar.start not in allowed_candidate_starts:
+            candidate = None
         if candidate:
             kind, multiple = candidate
             proof = _verify(bars, index, kind)

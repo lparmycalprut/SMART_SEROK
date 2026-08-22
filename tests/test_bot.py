@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from gmgn_trading_bot.config import load_config, load_env_file
 from gmgn_trading_bot.engine import (
-    Bar, Trade, SIG_RESISTANCE, SIG_RETEST_RES, SIG_RETEST_SUP, SIG_SUPPORT, build_bars, scan_smart_serok,
+    Bar, Trade, SIG_RESISTANCE, SIG_RETEST_RES, SIG_RETEST_SUP, SIG_SUPPORT,
+    build_bars, candidate_starts_from_price_reference, scan_smart_serok,
 )
 from gmgn_trading_bot.gmgn import GMGNClient
 from gmgn_trading_bot.gmgn_web import GMGNWebClient, normalize_trade
@@ -87,6 +88,14 @@ class SmartSerokEngineTests(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertEqual(levels, [])
 
+    def test_babyshib_false_spike_fails_independent_price_validation(self):
+        previous = Bar(0, 235_000, 236_000, 204_000, 222_000, -10.22, 20, 1.875, -1.875, False)
+        false_setup = Bar(3600, 222_173.19, 222_172.08, 179_408, 222_172.08, 10.01, 44, 20_000.5, 20_000.5, False)
+        allowed = candidate_starts_from_price_reference(
+            [previous, false_setup], {0: -5.86, 3600: 1.19}
+        )
+        self.assertNotIn(3600, allowed)
+
     def test_bar_history_matches_extension_168_bar_limit(self):
         trades = [
             Trade(str(i), "A" * 32, f"maker{i}", "buy", 1.0, 1.0 + i / 1000, i * 3600, f"tx{i}")
@@ -112,6 +121,9 @@ class SmartSerokEngineTests(unittest.TestCase):
         events, levels = scan_smart_serok("A" * 32, "TEST", bars)
         self.assertEqual([event.signal for event in events], [SIG_RESISTANCE, SIG_RETEST_RES])
         self.assertEqual(len(levels), 1)
+        filtered_events, filtered_levels = scan_smart_serok("A" * 32, "TEST", bars, set())
+        self.assertEqual(filtered_events, [])
+        self.assertEqual(filtered_levels, [])
 
     def test_support_and_retest_are_detected(self):
         def bar(i, close, high, low, cvd, r, cum):

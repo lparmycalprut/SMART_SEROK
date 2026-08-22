@@ -7,7 +7,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .config import BotConfig
-from .engine import Level, Trade, build_bars, event_message, fmt_mc, fmt_wib, scan_smart_serok
+from .engine import (
+    Bar, Level, Trade, build_bars, candidate_starts_from_price_reference,
+    event_message, fmt_mc, fmt_wib, scan_smart_serok,
+)
 from .gmgn import GMGNClient, GMGNError
 from .gmgn_web import GMGNWebClient
 from .notifier import TelegramNotifier
@@ -69,7 +72,8 @@ class WatchlistMonitor:
             self._enrich_holder_tags(all_trades, wallet_tags)
             mc_per_price = holder_supply if holder_supply > 0 else self._mc_per_price(mint)
             bars = build_bars(all_trades, now_ts - self.config.close_grace_seconds, 3600, mc_per_price)
-            events, levels = scan_smart_serok(mint, symbol, bars)
+            allowed_candidates = self._validated_candidates(mint, bars)
+            events, levels = scan_smart_serok(mint, symbol, bars, allowed_candidates)
             with self.cache_lock:
                 self.level_cache[mint] = (symbol, levels)
 
@@ -111,6 +115,19 @@ class WatchlistMonitor:
                     self.state.set_kv(f"error_alert:{mint}", str(exc))
                 except Exception as notify_exc:
                     LOG.error("gagal mengirim provider error ke Telegram: %s", notify_exc)
+
+    def _validated_candidates(self, mint: str, bars: list[Bar]) -> set[int]:
+        """Fail closed unless the same R spike survives GMGN K-line prices."""
+        try:
+            # OpenAPI default rate limit 1 request/detik; metadata dipanggil tepat
+            # sebelumnya untuk market-cap context.
+            time.sleep(self.config.request_spacing_seconds)
+            candles = self.client.get_klines("sol", mint, "1h", bars=168)
+        except GMGNError as exc:
+            LOG.warning("validasi harga K-line %s gagal; kandidat level ditahan: %s", mint[:8], exc)
+            return set()
+        changes = {candle.start_ms // 1000: candle.change_pct for candle in candles}
+        return candidate_starts_from_price_reference(bars, changes)
 
     def _holder_context(self, mint: str) -> tuple[dict[str, set[str]], float]:
         cached = self.holder_cache.get(mint)
