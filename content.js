@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.13
+ * SMART SEROK — v9.2.14
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -39,7 +39,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.13";             // dipakai di header file export
+const EXT_VER = "9.2.14";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -1777,7 +1777,12 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
     }).join("");
 
     container.innerHTML = head
+      + `<div class="gmgn-chart-wrap">`
       + `<svg width="100%" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;">${s}</svg>`
+      + `<button class="gmgn-chart-arrow gmgn-chart-left" title="Geser ke kiri" aria-label="Geser ke kiri">‹</button>`
+      + `<button class="gmgn-chart-arrow gmgn-chart-right" title="Geser ke kanan" aria-label="Geser ke kanan">›</button>`
+      + `<span class="gmgn-chart-hint">⟷ geser / drag</span>`
+      + `</div>`
       + `<div class="gmgn-rm-base" style="margin:8px 2px 0;">${R_MON_TABLE_BARS} candle terakhir</div>`
       + `<table class="gmgn-rm-tbl"><thead><tr>
            <th>candle</th><th>harga</th><th>R</th><th>rasio</th><th>kondisi</th><th>bacaan</th>
@@ -1883,8 +1888,13 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
     s2 += `<text x="${padL}" y="${H2 - 5}" fill="#64748b" font-size="8">sinyal: |R|≥10× prev dan |R|≥10 · harga & cumCVD searah</text>`;
 
     container.innerHTML =
-      `<svg width="100%" viewBox="0 0 ${W} ${H1}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;">${s1}</svg>` +
-      `<svg width="100%" viewBox="0 0 ${W} ${H2}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;margin-top:4px;">${s2}</svg>`;
+      `<div class="gmgn-chart-wrap">` +
+        `<svg width="100%" viewBox="0 0 ${W} ${H1}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;">${s1}</svg>` +
+        `<svg width="100%" viewBox="0 0 ${W} ${H2}" xmlns="http://www.w3.org/2000/svg" style="background:#0b1220;border-radius:8px;margin-top:4px;">${s2}</svg>` +
+        `<button class="gmgn-chart-arrow gmgn-chart-left" title="Geser ke kiri" aria-label="Geser ke kiri">‹</button>` +
+        `<button class="gmgn-chart-arrow gmgn-chart-right" title="Geser ke kanan" aria-label="Geser ke kanan">›</button>` +
+        `<span class="gmgn-chart-hint">⟷ geser / drag</span>` +
+      `</div>`;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -2126,6 +2136,49 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
       : "Sedang menampilkan sinyal. Klik untuk membaca R murni.";
   }
 
+  // Chart tidak lagi dipaksa menyempit ke lebar widget: SVG dibiarkan pada
+  // lebar aslinya (1000px) dan di-scroll horizontal. Fungsi ini memasang:
+  //   • tombol ‹ › untuk geser cepat (muncul otomatis hanya saat bisa scroll)
+  //   • drag (tekan + geser) untuk pan halus
+  //   • update kelas can-l/can-r setiap scroll/resize
+  // render ulang mengganti DOM chart, jadi re-wire otomatis via MutationObserver.
+  function wireChartScroll() {
+    const wire = (wrap) => {
+      const leftBtn = wrap.querySelector(".gmgn-chart-left");
+      const rightBtn = wrap.querySelector(".gmgn-chart-right");
+      const updateCan = () => {
+        wrap.classList.toggle("can-l", wrap.scrollLeft > 0);
+        wrap.classList.toggle("can-r", wrap.scrollLeft < wrap.scrollWidth - wrap.clientWidth - 2);
+      };
+      updateCan();
+      requestAnimationFrame(updateCan);
+      wrap.addEventListener("scroll", updateCan, { passive: true });
+      if (leftBtn) leftBtn.addEventListener("click", (e) => { e.stopPropagation(); wrap.scrollBy({ left: -wrap.clientWidth * 0.65, behavior: "smooth" }); });
+      if (rightBtn) rightBtn.addEventListener("click", (e) => { e.stopPropagation(); wrap.scrollBy({ left: wrap.clientWidth * 0.65, behavior: "smooth" }); });
+      // drag-to-pan (mouse). Sentuh sudah ditangani scroll native browser.
+      let down = false, sx = 0, sl = 0;
+      wrap.addEventListener("mousedown", (e) => {
+        if (e.target.closest("button")) return;
+        down = true; sx = e.clientX; sl = wrap.scrollLeft;
+        wrap.classList.add("is-panning");
+        if (e.target.closest("svg")) e.preventDefault(); // cegah seleksi teks
+      });
+      window.addEventListener("mousemove", (e) => { if (!down) return; wrap.scrollLeft = sl - (e.clientX - sx); });
+      window.addEventListener("mouseup", () => { if (down) { down = false; wrap.classList.remove("is-panning"); } });
+    };
+    document.querySelectorAll(".gmgn-chart-wrap").forEach(wire);
+    const mo = new MutationObserver((muts) => {
+      muts.forEach((m) => m.addedNodes.forEach((n) => {
+        if (n.nodeType === 1 && n.classList && n.classList.contains("gmgn-chart-wrap")) wire(n);
+      }));
+    });
+    document.querySelectorAll("#gmgn-effort-widget").forEach((h) => mo.observe(h, { childList: true, subtree: true }));
+    window.addEventListener("resize", () => document.querySelectorAll(".gmgn-chart-wrap").forEach((w) => {
+      w.classList.toggle("can-l", w.scrollLeft > 0);
+      w.classList.toggle("can-r", w.scrollLeft < w.scrollWidth - w.clientWidth - 2);
+    }));
+  }
+
   function injectUI() {
     if (document.getElementById("gmgn-effort-widget")) return;
     const host = document.createElement("div"); host.id = "gmgn-effort-widget";
@@ -2182,8 +2235,19 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
       #gmgn-effort-widget #gmgn-sig-tip { display: none; position: absolute; left: 14px; right: 14px; z-index: 20; background: #111827; border: 1px solid #475569; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: #e2e8f0; box-shadow: 0 10px 28px rgba(0,0,0,.5); pointer-events: none; }
       #gmgn-effort-widget #gmgn-sig-tip.is-on { display: block; }
       #gmgn-effort-widget #gmgn-chart { display: block; }
-      #gmgn-effort-widget #gmgn-chart svg { display: block; width: 100%; height: auto; }
-      #gmgn-effort-widget #gmgn-rmonitor svg { display: block; width: 100%; height: auto; }
+      #gmgn-effort-widget .gmgn-chart-wrap { position: relative; overflow-x: auto; overflow-y: hidden; border-radius: 8px; scrollbar-width: thin; scrollbar-color: #475569 #0b1220; cursor: grab; overscroll-behavior-x: contain; }
+      #gmgn-effort-widget .gmgn-chart-wrap.is-panning { cursor: grabbing; user-select: none; }
+      #gmgn-effort-widget .gmgn-chart-wrap svg { display: block; width: 100%; min-width: 1000px; height: auto; }
+      #gmgn-effort-widget .gmgn-chart-wrap::-webkit-scrollbar { height: 9px; }
+      #gmgn-effort-widget .gmgn-chart-wrap::-webkit-scrollbar-track { background: #0b1220; border-radius: 8px; }
+      #gmgn-effort-widget .gmgn-chart-wrap::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
+      #gmgn-effort-widget .gmgn-chart-wrap::-webkit-scrollbar-thumb:hover { background: #475569; }
+      #gmgn-effort-widget .gmgn-chart-arrow { position: absolute; top: 50%; transform: translateY(-50%); z-index: 6; width: 26px; height: 42px; padding: 0; border: 1px solid #334155; background: rgba(15, 23, 42, .88); color: #cbd5e1; font-size: 17px; font-weight: 700; line-height: 1; border-radius: 8px; cursor: pointer; font-family: inherit; display: none; align-items: center; justify-content: center; }
+      #gmgn-effort-widget .gmgn-chart-wrap.can-l .gmgn-chart-left { display: flex; left: 6px; }
+      #gmgn-effort-widget .gmgn-chart-wrap.can-r .gmgn-chart-right { display: flex; right: 6px; }
+      #gmgn-effort-widget .gmgn-chart-arrow:hover { background: #334155; color: #fff; }
+      #gmgn-effort-widget .gmgn-chart-hint { position: absolute; top: 7px; right: 10px; z-index: 6; display: none; font-size: 10px; color: #94a3b8; background: rgba(15, 23, 42, .82); border: 1px solid #1e293b; border-radius: 999px; padding: 2px 9px; white-space: nowrap; pointer-events: none; }
+      #gmgn-effort-widget .gmgn-chart-wrap.can-r .gmgn-chart-hint { display: inline-block; }
       #gmgn-effort-widget .gmgn-rm-empty { padding: 18px 10px; color: #64748b; font-size: 13px; }
       #gmgn-effort-widget .gmgn-rm-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 10px; margin-bottom: 6px; background: #0f172a; border: 1px solid #1e293b; border-radius: 9px; }
       #gmgn-effort-widget .gmgn-rm-tag { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 6px; border: 1px solid; white-space: nowrap; letter-spacing: .02em; }
@@ -2205,7 +2269,7 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.13</span>
+        <span class="t">🥄 SMART SEROK v9.2.14</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2286,6 +2350,7 @@ const EXT_VER = "9.2.13";             // dipakai di header file export
     document.addEventListener("mousemove", (e) => { if (!dragging) return; host.style.left = (sLeft + e.clientX - sx) + "px"; host.style.top = (sTop + e.clientY - sy) + "px"; });
     document.addEventListener("mouseup", () => { dragging = false; });
     updateUI();
+    wireChartScroll();
     setTimeout(() => refreshHolderContext(true), 1200);
     setInterval(updateUI, 3000);
   }

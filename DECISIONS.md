@@ -135,3 +135,19 @@ tampil di kolom Metric riwayat sinyal dan ikut ke export.
   2. R buta wick — pakai `close/open`, bukan `high-low`.
   3. Bar `partial` tetap discan untuk sinyal spike (hanya BATTLE yang memblokir).
   4. R tidak dinormalisasi ke likuiditas / market cap.
+
+## 2026-08-25 — Chart digeser horizontal, tidak dipaksa menyempit (v9.2.14)
+
+**Masalah:** chart (R MONITOR & lintasan harga/CVD) digambar pada viewBox 1000px
+tapi SVG dipaksa `width:100%` — saat widget lebih sempit dari 1000px, batang dan
+label mengecil tak terbaca.
+
+**Keputusan:** SVG dibiarkan pada lebar aslinya (`min-width:1000px`) dan dibungkus
+`.gmgn-chart-wrap` yang bisa di-scroll horizontal. Pengguna bisa:
+- geser (drag) dengan mouse / swipe native di layar sentuh,
+- klik tombol ‹ › (muncul otomatis hanya saat ada ruang terpotong),
+- scroll wheel / trackpad horizontal.
+
+Re-wire otomatis tiap render ulang (updateUI tiap 3 detik) lewat MutationObserver.
+Saat widget lebih lebar dari 1000px, chart tetap mengisi penuh dan tombol
+disembunyikan — perilaku lama tidak berubah di layar besar.
