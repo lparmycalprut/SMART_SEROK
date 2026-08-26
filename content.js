@@ -1,17 +1,13 @@
 /**
- * SMART SEROK — v9.3.0
+ * SMART SEROK — v9.4.0
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK.
  *
- *   1. RESISTANCE TERBENTUK — candle penyerapan BUY (spike +R) yang TERBUKTI:
- *      beberapa jam sesudahnya R runtuh, cumCVD turun, dan harga turun.
- *   2. SUPPORT TERBENTUK — kebalikannya (spike -R lalu R runtuh, cumCVD naik,
- *      harga naik).
+ *   1. RESISTANCE TERBENTUK — candle penyerapan BUY (spike +R ≥10× bar
+ *      sebelumnya DAN |R| ≥50). Level = HIGH–LOW candle itu dalam MC.
+ *   2. SUPPORT TERBENTUK — kebalikannya (spike −R).
  *
- * Level dinyatakan sebagai HIGH-LOW candle penyerapan dalam MARKET CAP.
- * Penyerapan yang harganya justru menembus lebih jauh dianggap GAGAL dan tidak
- * memunculkan level maupun sinyal.
- *
+ * Tidak ada verifikasi — penyerapan raksasa sudah cukup jadi pertanda.
  * Tidak ada clustering — semua bar dalam range tanggal dianalisa.
  */
 
@@ -36,7 +32,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.3.0";             // dipakai di header file export
+const EXT_VER = "9.4.0";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -56,20 +52,14 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
   const R_MIN_ABS = 50;                 // lantai |R| — di bawah ini bukan penyerapan
   const ABSORB_MIN_CVD = 3;             // SOL — lantai effort agar R tidak artefak
 
-  // ── LEVEL ENGINE (v9.3.0) ────────────────────────────────────────────────
+  // ── LEVEL ENGINE (v9.4.0) ────────────────────────────────────────────────
   // Hanya 2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK.
   //
-  // Resistance = candle penyerapan BUY (spike +R) yang TERBUKTI: beberapa jam
-  // sesudahnya R turun drastis, cumCVD turun, dan harga turun. Level = HIGH–LOW
-  // candle penyerapan itu, dinyatakan dalam MARKET CAP.
-  // Support = kebalikannya (spike −R lalu R turun, cumCVD naik, harga naik).
-  // Penyerapan yang harganya justru menembus lebih jauh = GAGAL, tidak jadi level.
+  // Penyerapan raksasa (R spike ≥10× bar sebelumnya DAN |R| ≥50) langsung
+  // menjadi level. Tidak ada verifikasi — serapan sebesar itu sudah cukup
+  // jadi pertanda support/resistance.
+  // Level = HIGH–LOW candle penyerapan, dinyatakan dalam MARKET CAP.
   // Tidak ada clustering — semua bar dalam range dianalisa.
-  const LVL_CONFIRM_BARS = 12;          // jendela bar untuk membuktikan penyerapan
-  const LVL_MIN_CONFIRM_BARS = 2;       // minimal bar sesudahnya agar bisa dinilai
-  const LVL_R_DROP = 0.5;               // R sesudahnya harus ≤50% R candle penyerapan
-  const LVL_MIN_MOVE_PCT = 5;           // harga wajib bergerak ≥5% ke arah yang benar
-  const LVL_FAIL_PCT = 2;               // tembus >2% melewati level = penyerapan gagal
   const SIG_RESISTANCE = "RESISTANCE TERBENTUK";
   const SIG_SUPPORT = "SUPPORT TERBENTUK";
   // ── R MONITOR ─────────────────────────────────────────────────────────────
@@ -1025,14 +1015,13 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // LEVEL ENGINE — resistance/support dari penyerapan yang TERBUKTI
+  // LEVEL ENGINE — resistance/support dari penyerapan raksasa
   // ══════════════════════════════════════════════════════════════════════════
   // Alur:
-  //   1. cari candle penyerapan (spike |R| ≥10× bar sebelumnya dan |R| ≥10)
-  //   2. buktikan pada beberapa bar sesudahnya: R runtuh + cumCVD & harga
-  //      bergerak menjauh ke arah yang benar
-  //   3. penyerapan terbukti -> level lahir (HIGH-LOW candle itu, dalam MC)
-  //      penyerapan gagal    -> tidak ada level, tidak ada sinyal
+  //   1. cari candle penyerapan (spike |R| ≥10× bar sebelumnya dan |R| ≥50)
+  //   2. langsung jadi level — tidak perlu pembuktian
+  //   3. +R (net BUY diserap seller) = RESISTANCE
+  //      -R (net SELL diserap buyer) = SUPPORT
 
   // Candle penyerapan: R melonjak dan effort cukup besar untuk dipercaya.
   function absorptionAt(bars, i) {
@@ -1047,86 +1036,15 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
     return { kind: cvd >= 0 ? "resistance" : "support", mult, bar: b, idx: i };
   }
 
-  // Pembuktian: cek bar sesudah penyerapan. Mengembalikan objek hasil dengan
-  // status "confirmed" atau "failed", atau null bila data belum cukup.
-  function verifyAbsorption(bars, cand) {
-    const i = cand.idx, b = cand.bar;
-    const isRes = cand.kind === "resistance";
-    const after = [];
-    for (let j = i + 1; j < bars.length && after.length < LVL_CONFIRM_BARS; j++) {
-      if (bars[j].partial) break;
-      after.push(bars[j]);
-    }
-    if (after.length < LVL_MIN_CONFIRM_BARS) return null;   // belum bisa dinilai
-
-    const refClose = b.close;
-    if (refClose == null || !(refClose > 0)) return null;
-    const lvlHigh = b.high, lvlLow = b.low;
-
-    const rBase = rAbsOf(b);
-
-    // Berjalan MAJU bar per bar. Di tiap langkah dinilai dua hal berurutan:
-    //   1. apakah bukti sudah lengkap sampai titik ini -> CONFIRMED, berhenti;
-    //   2. kalau belum, apakah harga menembus level -> FAILED, berhenti.
-    //
-    // Urutannya penting. Versi lama memindai SELURUH jendela 12 bar mencari
-    // penembusan lebih dulu, jadi level yang sudah terbukti berjam-jam
-    // sebelumnya tetap dibatalkan oleh pantulan yang datang belakangan.
-    // Kasus nyata Plumber 21 Agu 01:00: harga jatuh -18,6% dalam 4 bar
-    // (bukti lengkap), baru di bar ke-5 memantul menembus HIGH. Itu level
-    // resistance yang sah lalu ditembus — bukan penyerapan gagal.
-    // Prinsipnya sama dengan pengukuran titik terjauh: begitu terbukti,
-    // level tidak bisa dibatalkan oleh apa yang terjadi sesudahnya.
-    let extreme = refClose, extIdx = 0;
-    let best = null;
-
-    for (let k = 0; k < after.length; k++) {
-      const a = after[k];
-      const v = isRes ? a.low : a.high;
-      if (v != null && v > 0 && (isRes ? v < extreme : v > extreme)) { extreme = v; extIdx = k; }
-
-      // --- 1. cukup bukti sampai bar ini? ---
-      if (k + 1 >= LVL_MIN_CONFIRM_BARS) {
-        const movePct = (extreme / refClose - 1) * 100;
-        const atExt = after[extIdx];
-        const cvdDelta = (atExt && atExt.cumCVD != null && b.cumCVD != null) ? atExt.cumCVD - b.cumCVD : 0;
-        const span = after.slice(0, extIdx + 1);
-        const rAfter = percentile(span.map(x => rAbsOf(x)).filter(v2 => v2 != null), 0.5);
-        const rCollapsed = rBase > 0 && rAfter != null && rAfter <= rBase * LVL_R_DROP;
-        const info = { movePct, cvdDelta, rAfter, rBase, bars: k + 1, moveBars: extIdx + 1 };
-        const ok = isRes
-          ? (rCollapsed && cvdDelta < 0 && movePct <= -LVL_MIN_MOVE_PCT)
-          : (rCollapsed && cvdDelta > 0 && movePct >= LVL_MIN_MOVE_PCT);
-        if (ok) return Object.assign({ status: "confirmed" }, info);
-        best = info;
-      }
-
-      // --- 2. belum terbukti dan harga sudah menembus level -> gagal ---
-      if (a.close != null) {
-        if (isRes && lvlHigh > 0 && (a.close / lvlHigh - 1) * 100 > LVL_FAIL_PCT) {
-          return { status: "failed", why: "harga menembus HIGH level sebelum terbukti" };
-        }
-        if (!isRes && lvlLow > 0 && (lvlLow / a.close - 1) * 100 > LVL_FAIL_PCT) {
-          return { status: "failed", why: "harga menembus LOW level sebelum terbukti" };
-        }
-      }
-    }
-
-    if (best) return Object.assign({ status: "pending" }, best);
-    const movePct = (extreme / refClose - 1) * 100;
-    return { status: "pending", movePct, cvdDelta: 0, rAfter: null, rBase,
-             bars: after.length, moveBars: extIdx + 1 };
-  }
-
-  function makeLevelEvent(cand, proof, bars) {
+  function makeLevelEvent(cand, bars) {
     const isRes = cand.kind === "resistance";
     const b = cand.bar;
     return {
       signal: isRes ? SIG_RESISTANCE : SIG_SUPPORT,
       side: isRes ? "top" : "bottom",
-      conf: Math.min(99, Math.round(50 + Math.min(cand.mult, 40) + Math.abs(proof.movePct))),
+      conf: Math.min(99, Math.round(50 + Math.min(cand.mult, 40))),
       grade: isRes ? "R" : "S",
-      gradeLabel: (isRes ? "resistance" : "support") + " terbukti",
+      gradeLabel: (isRes ? "resistance" : "support") + " (penyerapan raksasa)",
       gradeColor: isRes ? "#ef4444" : "#22c55e",
       gradeParts: [],
       setup: b, confirm: b, setupIdx: cand.idx, confirmIdx: cand.idx, spike: true,
@@ -1144,11 +1062,6 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
         confirmCvd: b.cvdClean != null ? b.cvdClean : b.cvd,
         rMult: cand.mult,
         prevR: rAbsOf(bars[cand.idx - 1]),
-        proofMove: proof.movePct,
-        proofCvd: proof.cvdDelta,
-        proofRAfter: proof.rAfter,
-        proofBars: proof.bars,
-        proofMoveBars: proof.moveBars,
         rangeLowMc: b.lowMc,
         rangeHighMc: b.highMc,
         lineMc: isRes ? b.highMc : b.lowMc,
@@ -1168,17 +1081,12 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
     const levels = [];
 
     for (let i = 0; i < bars.length; i++) {
-      const b = bars[i];
-
-      // penyerapan -> pembuktian -> level lahir
+      // penyerapan raksasa -> langsung jadi level
       const cand = absorptionAt(bars, i);
       if (cand) {
-        const proof = verifyAbsorption(bars, cand);
-        if (proof && proof.status === "confirmed") {
-          const ev = makeLevelEvent(cand, proof, bars);
-          evs.push(ev);
-          levels.push(ev.level);
-        }
+        const ev = makeLevelEvent(cand, bars);
+        evs.push(ev);
+        levels.push(ev.level);
       }
     }
     evs.sort((a, b) => a.confirm.start - b.confirm.start);
@@ -1225,13 +1133,12 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
     if (isLevel) {
       const res = c.signal === SIG_RESISTANCE;
       lines.push(res
-        ? "🔴 RESISTANCE TERBENTUK — penyerapan BUY terbukti: harga gagal naik dan berbalik turun."
-        : "🟢 SUPPORT TERBENTUK — penyerapan SELL terbukti: harga gagal turun dan berbalik naik.");
+        ? "🔴 RESISTANCE TERBENTUK — penyerapan BUY raksasa: seller menyerap habis permintaan di level ini."
+        : "🟢 SUPPORT TERBENTUK — penyerapan SELL raksasa: buyer menyerap habis tekanan jual di level ini.");
       lines.push(`${res ? "RESISTANCE" : "SUPPORT"} MC: ${fmtMarketCap(e.lineMc)}   (${res ? "HIGH" : "LOW"} candle penyerapan)`);
       lines.push(`rentang candle: ${fmtMarketCap(e.rangeLowMc)} — ${fmtMarketCap(e.rangeHighMc)}`);
       lines.push(`terbentuk: ${fmtBar(s)} WIB`);
       lines.push(`penyerapan: R ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)} (${e.rMult.toFixed(1)}×) · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}%`);
-      lines.push(`pembuktian: harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(1)}% ke titik terjauh dalam ${e.proofMoveBars} bar · R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(1) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)}`);
       return lines.join("\n");
     }
 
@@ -1717,7 +1624,7 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
     }
     L.push("#");
 
-    L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}) yang TERBUKTI: dalam <=${LVL_CONFIRM_BARS} bar berikutnya R runtuh <=${LVL_R_DROP * 100}%, cumCVD dan harga bergerak >=${LVL_MIN_MOVE_PCT}% ke arah yang benar (harga diukur ke TITIK TERJAUH, bukan bar terakhir). Bukti dinilai MAJU bar per bar: begitu terbukti level tidak bisa dibatalkan penembusan yang datang belakangan; penembusan >${LVL_FAIL_PCT}% SEBELUM terbukti = GAGAL, tidak jadi level. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP.`);
+    L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan raksasa (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}). Penyerapan sebesar ini langsung jadi level tanpa verifikasi tambahan. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP.`);
     L.push(`# NOTE: R MONITOR. R = |cvd_clean| / |chg_pct|, dinormalisasi ke r_baseline_median. r_state: BEBAS <${R_BAND_FREE}x, NORMAL, SERAP >=${R_BAND_ABSORB}x, TEMBOK_SELLER/TEMBOK_BUYER >=${R_BAND_WALL}x. Akhiran _RAKSASA hanya untuk candle yang lolos ambang sinyal (|R| >=${R_MIN_ABS} DAN lonjakan >=${R_SPIKE_MULT}x bar sebelumnya) sekaligus >=${R_BAND_BLAZE}x acuan; rasio besar tapi |R| kecil TIDAK dihitung raksasa karena tidak akan pernah jadi sinyal. +R = order SELL menahan, -R = order BUY menahan.`);
     L.push(`# NOTE: FORENSIK WICK. high/low hanya dari trade >=${HL_MIN_SOL} SOL. high_raw/low_raw = versi TANPA saringan itu; kalau berbeda jauh berarti ada trade debu di harga ekstrem (lihat dust_tx). Kolom max_trade_sol = trade terbesar di bar itu.`);
     L.push("#");
@@ -2010,7 +1917,7 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.3.0</span>
+        <span class="t">🥄 SMART SEROK v9.4.0</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2053,9 +1960,8 @@ const EXT_VER = "9.3.0";             // dipakai di header file export
           Batang ke ATAS = net BELI masuk tapi harga tertahan → SELLER yang menyerap (tekanan jual pasif di atas). Batang ke BAWAH = net JUAL keluar tapi harga tertahan → BUYER yang menyerap (tekanan beli pasif di bawah). Bar dengan effort &lt;${R_MON_MIN_EFFORT} SOL ditandai SEPI karena R-nya artefak pembagian. Konfirmasi dilakukan manual.
         </div>
         <div class="gmgn-note" id="gmgn-note-sinyal">
-          🔴 RESISTANCE / 🟢 SUPPORT TERBENTUK: candle penyerapan (|R| ≥${R_SPIKE_MULT}× bar sebelumnya DAN |R| ≥${R_MIN_ABS}) yang TERBUKTI — dalam ≤${LVL_CONFIRM_BARS} bar berikutnya R runtuh ≤${LVL_R_DROP * 100}%, cumCVD dan harga bergerak ≥${LVL_MIN_MOVE_PCT}% ke arah yang benar. Harga diukur ke TITIK TERJAUH yang dicapai, bukan ke bar terakhir — level tetap sah walau harga memantul balik setelahnya.
+          🔴 RESISTANCE / 🟢 SUPPORT TERBENTUK: candle penyerapan raksasa (|R| ≥${R_SPIKE_MULT}× bar sebelumnya DAN |R| ≥${R_MIN_ABS}). Penyerapan sebesar ini sudah cukup jadi pertanda — tidak perlu verifikasi tambahan.
           GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dinyatakan dalam MARKET CAP. HIGH/LOW hanya dihitung dari trade ≥${HL_MIN_SOL} SOL supaya trade debu tidak menggeser garis.
-          Penyerapan yang harganya justru menembus level &gt;${LVL_FAIL_PCT}% dianggap GAGAL: tidak jadi level dan tidak ditampilkan.
         </div>
       </div>
     </div>`;
