@@ -1,20 +1,18 @@
 /**
- * SMART SEROK — v9.2.14
+ * SMART SEROK — v9.3.0
  * --------------------------------------------------------------
- * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
+ * LEVEL ENGINE — hanya 2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK.
  *
  *   1. RESISTANCE TERBENTUK — candle penyerapan BUY (spike +R) yang TERBUKTI:
  *      beberapa jam sesudahnya R runtuh, cumCVD turun, dan harga turun.
  *   2. SUPPORT TERBENTUK — kebalikannya (spike -R lalu R runtuh, cumCVD naik,
  *      harga naik).
- *   3. RETEST RESISTANCE — harga kembali ke zona resistance tetapi R hanya
- *      normal dan cumCVD naik: seller penjaga level sudah tidak hadir.
- *   4. RETEST SUPPORT — harga kembali ke zona support dengan R normal dan
- *      cumCVD turun: buyer penjaga level sudah tidak hadir.
  *
  * Level dinyatakan sebagai HIGH-LOW candle penyerapan dalam MARKET CAP.
  * Penyerapan yang harganya justru menembus lebih jauh dianggap GAGAL dan tidak
  * memunculkan level maupun sinyal.
+ *
+ * Tidak ada clustering — semua bar dalam range tanggal dianalisa.
  */
 
 (function () {
@@ -34,20 +32,17 @@
   let cachedHolderSupply = 0;
   let cachedTokenSymbol = "";     // simbol token untuk penamaan file export
   let mcContextSource = "none", holderFetchBusy = false, holderFetchMint = null, holderFetchLastAt = 0;
-  let selectedCluster = null;   // null = latest (auto); atau index klaster yg dipilih user
   const captureStats = { requests: 0, seen: 0, recorded: 0, dup: 0, outOfRange: 0,
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.14";             // dipakai di header file export
+const EXT_VER = "9.3.0";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
   const FRESH_TAGS = ["fresh_wallet"];
   const CHART_BARS = 48;
   const MAX_BARS = 168;
-  let CLUSTER_GAP = 6 * 3600;
-  const MIN_CLUSTER_BARS = 4;
 
   // Akumulasi / Distribusi — SERAP_R bergantung TF
   let SERAP_R = 2.5;
@@ -61,39 +56,22 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   const R_MIN_ABS = 50;                 // lantai |R| — di bawah ini bukan penyerapan
   const ABSORB_MIN_CVD = 3;             // SOL — lantai effort agar R tidak artefak
 
-  // ── LEVEL ENGINE (v9.2.0) ────────────────────────────────────────────────
-  // Hanya 4 sinyal. Semua sinyal lama dihapus.
-  //   1. RESISTANCE TERBENTUK   2. SUPPORT TERBENTUK
-  //   3. RETEST SUPPORT         4. RETEST RESISTANCE
+  // ── LEVEL ENGINE (v9.3.0) ────────────────────────────────────────────────
+  // Hanya 2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK.
   //
   // Resistance = candle penyerapan BUY (spike +R) yang TERBUKTI: beberapa jam
   // sesudahnya R turun drastis, cumCVD turun, dan harga turun. Level = HIGH–LOW
   // candle penyerapan itu, dinyatakan dalam MARKET CAP.
   // Support = kebalikannya (spike −R lalu R turun, cumCVD naik, harga naik).
   // Penyerapan yang harganya justru menembus lebih jauh = GAGAL, tidak jadi level.
+  // Tidak ada clustering — semua bar dalam range dianalisa.
   const LVL_CONFIRM_BARS = 12;          // jendela bar untuk membuktikan penyerapan
   const LVL_MIN_CONFIRM_BARS = 2;       // minimal bar sesudahnya agar bisa dinilai
   const LVL_R_DROP = 0.5;               // R sesudahnya harus ≤50% R candle penyerapan
   const LVL_MIN_MOVE_PCT = 5;           // harga wajib bergerak ≥5% ke arah yang benar
   const LVL_FAIL_PCT = 2;               // tembus >2% melewati level = penyerapan gagal
-  // Retest = harga kembali ke GARIS level, bukan ke pita LOW-HIGH.
-  //   resistance -> garisnya HIGH candle penyerapan
-  //   support    -> garisnya LOW  candle penyerapan
-  const LVL_LINE_PAD_PCT = 0.5;         // toleransi sentuhan garis (% dari harga garis)
-  // Harga wajib PERGI dulu sebelum boleh dihitung "kembali". Tanpa syarat ini,
-  // harga yang masih berkeliaran di sekitar level baru ikut terhitung retest.
-  // 2% cukup membedakan "harga benar-benar pergi" dari "masih menempel di level",
-  // tanpa mematikan retest pada token yang bergerak rapat.
-  const LVL_EXIT_PCT = 2;               // % menjauh dari garis agar level "armed"
-  const LVL_RETEST_MIN_GAP = 2;         // jeda minimal (bar) sebelum retest dihitung
-  // Harus SAMA dengan batas "normal" di R MONITOR (R_BAND_ABSORB = 1,5).
-  // Kalau lebih ketat, ada bar yang dibaca "normal" oleh R MONITOR tapi ditolak
-  // sebagai retest — membingungkan dan membuat sinyal retest hilang.
-  const LVL_RETEST_R_MAX = 1.5;         // retest valid bila |R| <1,5× acuan (= band normal)
   const SIG_RESISTANCE = "RESISTANCE TERBENTUK";
   const SIG_SUPPORT = "SUPPORT TERBENTUK";
-  const SIG_RETEST_RES = "RETEST RESISTANCE — KEMUNGKINAN BREAKOUT";
-  const SIG_RETEST_SUP = "RETEST SUPPORT — KEMUNGKINAN BREAKDOWN";
   // ── R MONITOR ─────────────────────────────────────────────────────────────
   // Mode baca R murni: tanpa sinyal, tanpa chart harga/CVD. Tujuannya hanya
   // menjawab dua hal secara manual:
@@ -136,7 +114,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     if (!pageMint || pageMint === "GMGN") return pageMint;
     if (lastSeenMint && lastSeenMint !== pageMint) {
       capturedTrades.clear(); walletTagRegistry.clear();
-      detectedFromTs = null; detectedToTs = null; selectedCluster = null;
+      detectedFromTs = null; detectedToTs = null;
       cachedMcUsd = 0; cachedSupply = 0; cachedPriceUsd = 0; cachedMcPerPrice = 0; cachedHolderSupply = 0;
       cachedTokenSymbol = "";
       mcContextSource = "none"; holderFetchMint = null; holderFetchLastAt = 0;
@@ -434,7 +412,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     activeTf = tf;
     detectedTfId = tf.id;
     BAR_SEC = tf.sec;
-    CLUSTER_GAP = 6 * tf.sec;
     return tf;
   }
   function noteTfFromUrl(url) {
@@ -791,7 +768,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       const priced = list.filter(t => t.price > 0);
       // HIGH/LOW hanya dari trade bernilai nyata. Trade debu (≈0 SOL) sering
       // tercetak di harga ekstrem dan menarik wick ke level yang tidak pernah
-      // benar-benar diperdagangkan — garis level jadi salah dan retest tak pernah
+      // benar-benar diperdagangkan — garis level jadi salah dan level tak pernah
       // kena. Kasus nyata BABYSHIB 20 Agu 01:00: satu trade 0,0000 SOL membuat
       // HIGH $250,5K padahal harga nyata tertinggi $121,8K.
       const real = priced.filter(t => t.sol >= HL_MIN_SOL);
@@ -862,50 +839,16 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       b.highRawMc = mcPerPrice > 0 && b.highRaw != null ? b.highRaw * mcPerPrice : null;
       b.lowRawMc = mcPerPrice > 0 && b.lowRaw != null ? b.lowRaw * mcPerPrice : null;
     }
-    let cum = 0, cl = 0;
+    let cum = 0;
     for (let i = 0; i < bars.length; i++) {
-      if (i > 0 && bars[i].start - bars[i - 1].start > CLUSTER_GAP) cl++;
-      bars[i].cluster = cl;
       cum += bars[i].cvdClean; bars[i].cumCVD = cum;
     }
     return bars;
   }
 
-  // Klaster aktivitas TERAKHIR: putus saat gap antar bar > CLUSTER_GAP. Dipakai
-  // classifier supaya data lampau (token mati lama lalu nyala) tak mencemari sinyal.
-  function latestCluster(bars) {
-    if (!bars || bars.length <= 1) return (bars || []).slice();
-    // index awal tiap klaster (break pada gap > CLUSTER_GAP)
-    const breaks = [0];
-    for (let i = 1; i < bars.length; i++) if (bars[i].start - bars[i - 1].start > CLUSTER_GAP) breaks.push(i);
-    let startIdx = breaks[breaks.length - 1];
-    // jika klaster terakhir terlalu kecil (bar lepas/1 trade) & ada klaster sebelumnya -> pakai klaster sebelumnya
-    if (bars.length - startIdx < MIN_CLUSTER_BARS && breaks.length >= 2) startIdx = breaks[breaks.length - 2];
-    return bars.slice(startIdx);
-  }
-
-  // Bar aktif utk tampil/analisa: klaster terpilih, atau latest (auto).
+  // Semua bar aktif — tidak ada clustering.
   function activeBars(bars) {
-    if (selectedCluster == null) return latestCluster(bars);
-    const f = bars.filter(b => b.cluster === selectedCluster);
-    return f.length ? f : latestCluster(bars);
-  }
-
-  // Isi dropdown klaster (rebuild hanya jika berubah, agar tak reset saat dipakai).
-  function populateClusterSelect(bars) {
-    const sel = document.getElementById("gmgn-cluster");
-    if (!sel) return;
-    const cl = {}; bars.forEach(b => { (cl[b.cluster] = cl[b.cluster] || []).push(b); });
-    const keys = Object.keys(cl).map(Number).sort((a, b) => a - b);
-    const opts = [`<option value="">latest (auto)</option>`];
-    keys.forEach((k, i) => {
-      const c = cl[k]; const p = tzParts(c[0].start);
-      const latest = (i === keys.length - 1);
-      opts.push(`<option value="${k}">cluster ${k} (${fmtDateId(p)}, ${c.length} bar${latest ? " *" : ""})</option>`);
-    });
-    const sig = opts.join("");
-    if (sel._sig !== sig) { sel.innerHTML = opts.join(""); sel._sig = sig; }
-    sel.value = selectedCluster == null ? "" : String(selectedCluster);
+    return (bars || []).slice();
   }
 
   // ── helper ──
@@ -1090,7 +1033,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   //      bergerak menjauh ke arah yang benar
   //   3. penyerapan terbukti -> level lahir (HIGH-LOW candle itu, dalam MC)
   //      penyerapan gagal    -> tidak ada level, tidak ada sinyal
-  //   4. saat harga kembali ke GARIS level dengan R normal -> sinyal retest
 
   // Candle penyerapan: R melonjak dan effort cukup besar untuk dipercaya.
   function absorptionAt(bars, i) {
@@ -1215,84 +1157,20 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     };
   }
 
-  // Retest: harga kembali menyentuh GARIS level, tetapi R hanya normal.
-  // Artinya pihak yang dulu mempertahankan level sudah tidak hadir lagi.
-  function makeRetestEvent(level, b, i, rNorm, base) {
-    const isRes = level.kind === "resistance";
-    return {
-      signal: isRes ? SIG_RETEST_RES : SIG_RETEST_SUP,
-      side: isRes ? "top" : "bottom",
-      conf: Math.max(20, Math.min(99, Math.round(90 - rNorm * 30))),
-      grade: rNorm.toFixed(2) + "×",
-      gradeLabel: "R normal saat retest",
-      gradeColor: isRes ? "#38bdf8" : "#f59e0b",
-      gradeParts: [],
-      setup: b, confirm: b, setupIdx: i, confirmIdx: i, spike: false,
-      level,
-      ev: {
-        setupR: b.signedR != null ? b.signedR : b.R,
-        confirmR: b.R,
-        setupChg: b.priceChgPct, confirmChg: b.priceChgPct,
-        setupCvd: b.cvdClean != null ? b.cvdClean : b.cvd,
-        confirmCvd: b.cvdClean != null ? b.cvdClean : b.cvd,
-        rNorm, rBaseline: base,
-        levelStart: level.start,
-        rangeLowMc: level.lowMc,
-        rangeHighMc: level.highMc,
-        lineMc: level.kind === "resistance" ? level.highMc : level.lowMc,
-        linePrice: levelLine(level),
-        cumCvdDelta: b.cumCVD
-      }
-    };
-  }
-
   // Garis level: HIGH untuk resistance, LOW untuk support.
   function levelLine(level) {
     if (!level) return null;
     return level.kind === "resistance" ? level.high : level.low;
   }
-  // Apakah candle menyentuh GARIS level (bukan pita LOW-HIGH)?
-  function touchesLine(b, level) {
-    const line = levelLine(level);
-    if (line == null || !(line > 0)) return false;
-    if (b.high == null || b.low == null) return false;
-    const pad = line * (LVL_LINE_PAD_PCT / 100);
-    return b.high >= line - pad && b.low <= line + pad;
-  }
-
-  // Ringkasan kenapa retest belum muncul untuk sebuah level.
-  function retestDiagText(lv) {
-    const d = lv && lv.diag;
-    const isRes = lv && lv.kind === "resistance";
-    const what = isRes ? "RETEST RESISTANCE" : "RETEST SUPPORT";
-    if (!d) return `${what}: belum ada bar sesudah level.`;
-    if (!d.touch) {
-      const n = d.near === Infinity ? null : d.near;
-      return n == null
-        ? `${what}: harga belum pernah kembali ke garis.`
-        : `${what}: harga belum menyentuh garis — terdekat ${n.toFixed(2)}% (toleransi ${LVL_LINE_PAD_PCT}%).`;
-    }
-    const parts = [];
-    if (d.rHigh) parts.push(`R masih tinggi ${d.rHighVal != null ? "(" + d.rHighVal.toFixed(2) + "× > " + LVL_RETEST_R_MAX + "×)" : ""} ${d.rHigh}×`);
-    if (d.wrongDir) parts.push(`cumCVD arah salah ${d.wrongDir}×`);
-    if (d.notArmed) parts.push(`level belum ter-arm (harga belum menjauh ${LVL_EXIT_PCT}%) ${d.notArmed}×`);
-    if (d.lowEffort) parts.push(`volume terlalu sepi ${d.lowEffort}×`);
-    if (d.gap) parts.push(`terlalu dekat dgn level (<${LVL_RETEST_MIN_GAP} bar) ${d.gap}×`);
-    if (d.noData) parts.push(`data cumCVD/R kosong ${d.noData}×`);
-    if (!parts.length) return `${what}: sudah menyentuh garis ${d.touch}× — sinyal seharusnya muncul.`;
-    return `${what}: menyentuh garis ${d.touch}× tapi ditahan — ${parts.join(" · ")}.`;
-  }
-
   function scanSignals(bars) {
     const evs = [];
     if (!bars || !bars.length) return { events: evs, pending: null, levels: [] };
-    const base = rBaseline(bars);
     const levels = [];
 
     for (let i = 0; i < bars.length; i++) {
       const b = bars[i];
 
-      // 1-2. penyerapan -> pembuktian -> level lahir
+      // penyerapan -> pembuktian -> level lahir
       const cand = absorptionAt(bars, i);
       if (cand) {
         const proof = verifyAbsorption(bars, cand);
@@ -1301,89 +1179,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
           evs.push(ev);
           levels.push(ev.level);
         }
-        // status "failed" / "pending" sengaja tidak memunculkan sinyal apa pun
-      }
-
-      // 3-4. retest: harga kembali ke GARIS level dengan R normal.
-      //
-      // ARMING dijalankan LEBIH DULU dan TERPISAH dari syarat kualitas candle.
-      // Alasannya: bar-bar saat harga "pergi" biasanya justru ber-R tinggi
-      // (dump/pump keras) atau sepi. Kalau arming ikut disaring oleh R normal
-      // dan effort, level tidak pernah ter-arm dan retest hilang sama sekali.
-      if (b.partial || b.close == null) continue;
-      // Arming dievaluasi dari bar SEBELUMNYA (lv.pendingArm), bukan bar ini.
-      // Kalau bar yang menjauhkan harga juga boleh langsung memicu retest, satu
-      // candle breakout yang wick bawahnya masih menyerempet garis akan
-      // menghasilkan sinyal duplikat. Kasus nyata BABYSHIB 20 Agu 20:00.
-      for (const lv of levels) {
-        if (lv.idx >= i) continue;
-        if (lv.pendingArm) { lv.armed = true; lv.pendingArm = false; }
-      }
-
-      // DIAGNOSA: catat pendekatan terdekat & gerbang mana yang menahan retest.
-      // Murni pencatatan, tidak mengubah keputusan sinyal.
-      {
-        const dAbsR = rAbsOf(b);
-        const dRNorm = (base != null && base > 1e-9 && dAbsR != null) ? dAbsR / base : null;
-        const dPrev = i > 0 ? bars[i - 1] : null;
-        const dCvdUp = (dPrev && dPrev.cumCVD != null && b.cumCVD != null) ? b.cumCVD > dPrev.cumCVD : null;
-        for (const lv of levels) {
-          if (lv.idx >= i) continue;
-          const ln = levelLine(lv);
-          if (ln == null || !(ln > 0)) continue;
-          const d = lv.diag || (lv.diag = { near: Infinity, nearAt: null, touch: 0,
-            gap: 0, notArmed: 0, rHigh: 0, lowEffort: 0, wrongDir: 0, noData: 0, rHighVal: null });
-          const inside = b.high != null && b.low != null && b.high >= ln && b.low <= ln;
-          const dist = inside ? 0 : Math.min(
-            b.high != null ? Math.abs(b.high / ln - 1) : Infinity,
-            b.low != null ? Math.abs(b.low / ln - 1) : Infinity) * 100;
-          if (dist < d.near) { d.near = dist; d.nearAt = b.start; }
-          if (!touchesLine(b, lv)) continue;
-          d.touch++;
-          if (i - lv.idx < LVL_RETEST_MIN_GAP) { d.gap++; continue; }
-          if (!lv.armed) { d.notArmed++; continue; }
-          if (dRNorm == null) { d.noData++; continue; }
-          if (dRNorm > LVL_RETEST_R_MAX) { d.rHigh++; d.rHighVal = dRNorm; continue; }
-          if (effortAbs(b) < ABSORB_MIN_CVD) { d.lowEffort++; continue; }
-          if (dCvdUp == null) { d.noData++; continue; }
-          if (lv.kind === "resistance" && !dCvdUp) { d.wrongDir++; continue; }
-          if (lv.kind === "support" && dCvdUp) { d.wrongDir++; continue; }
-        }
-      }
-
-      // Saringan kualitas candle hanya untuk MEMUNCULKAN sinyal, bukan arming.
-      if (b.R == null || base == null) continue;
-      const absR = rAbsOf(b);
-      const rNorm = base > 1e-9 ? absR / base : null;
-      if (rNorm == null || rNorm > LVL_RETEST_R_MAX) continue;
-      if (effortAbs(b) < ABSORB_MIN_CVD) continue;
-      const prev = i > 0 ? bars[i - 1] : null;
-      if (!prev || prev.cumCVD == null || b.cumCVD == null) continue;
-      const cvdUp = b.cumCVD > prev.cumCVD;
-
-      for (const lv of levels) {
-        if (i - lv.idx < LVL_RETEST_MIN_GAP) continue;
-        if (!lv.armed) continue;              // harus pernah pergi dulu
-        if (!touchesLine(b, lv)) continue;
-        // resistance: retest valid bila cumCVD NAIK (buyer datang lagi)
-        // support:    retest valid bila cumCVD TURUN (seller datang lagi)
-        // Arah salah = bukan retest yang kita cari; level TETAP armed supaya
-        // kunjungan berikutnya masih bisa memicu sinyal.
-        if (lv.kind === "resistance" && !cvdUp) continue;
-        if (lv.kind === "support" && cvdUp) continue;
-        // Satu alert per kunjungan: kunci level sampai harga pergi lagi.
-        lv.armed = false;
-        evs.push(makeRetestEvent(lv, b, i, rNorm, base));
-        break;   // satu retest per candle
-      }
-
-      // Setelah emisi: catat kalau bar ini membuat harga menjauh dari garis.
-      // Efeknya baru berlaku di bar berikutnya.
-      for (const lv of levels) {
-        if (lv.idx >= i) continue;
-        const ln2 = levelLine(lv);
-        if (ln2 == null || !(ln2 > 0)) continue;
-        if (Math.abs(b.close / ln2 - 1) * 100 >= LVL_EXIT_PCT) lv.pendingArm = true;
       }
     }
     evs.sort((a, b) => a.confirm.start - b.confirm.start);
@@ -1395,20 +1190,19 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   function detectPending() { return null; }
 
   function classify(bars) {
-    const cb = latestCluster(bars);
-    if (!cb.length) return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason: "butuh data bar. Token sepi atau fetch lebih banyak.", bars: cb };
-    const scan = scanSignals(cb);
+    if (!bars || !bars.length) return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason: "butuh data bar. Token sepi atau fetch lebih banyak.", bars: bars || [] };
+    const scan = scanSignals(bars);
     const evs = scan.events;
     if (!evs.length) {
-      const reason = cb.length < LVL_MIN_BARS
-        ? `NETRAL — butuh ≥${LVL_MIN_BARS} bar selesai untuk acuan R; klaster terakhir ${cb.length} bar.`
+      const reason = bars.length < LVL_MIN_BARS
+        ? `NETRAL — butuh ≥${LVL_MIN_BARS} bar selesai untuk acuan R; ${bars.length} bar tersedia.`
         : "NETRAL — belum ada level terbukti. Penyerapan yang gagal tidak dihitung.";
-      return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason, last: cb[cb.length - 1], bars: cb, pending: null, events: evs, levels: scan.levels };
+      return { signal: "NETRAL", phase: "NETRAL", conf: 0, reason, last: bars[bars.length - 1], bars, pending: null, events: evs, levels: scan.levels };
     }
     const c = evs[evs.length - 1];
     c.phase = c.signal;
     c.last = c.confirm;
-    c.bars = cb;
+    c.bars = bars;
     c.events = evs;
     c.levels = scan.levels;
     c.pending = null;
@@ -1417,8 +1211,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   }
 
   function signalHistory(bars) {
-    const cb = latestCluster(bars);
-    return detectEvents(cb).map(e => ({
+    return detectEvents(bars).map(e => ({
       t: e.confirm.start, signal: e.signal, side: e.side, conf: e.conf || 0,
       grade: e.grade || "", setupT: e.setup.start,
       lowMc: e.level ? e.level.lowMc : null, highMc: e.level ? e.level.highMc : null
@@ -1428,7 +1221,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   function buildNarrative(c) {
     const e = c.ev, s = c.setup, lines = [];
     const isLevel = c.signal === SIG_RESISTANCE || c.signal === SIG_SUPPORT;
-    const isRetest = c.signal === SIG_RETEST_RES || c.signal === SIG_RETEST_SUP;
 
     if (isLevel) {
       const res = c.signal === SIG_RESISTANCE;
@@ -1440,18 +1232,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       lines.push(`terbentuk: ${fmtBar(s)} WIB`);
       lines.push(`penyerapan: R ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)} (${e.rMult.toFixed(1)}×) · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}%`);
       lines.push(`pembuktian: harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(1)}% ke titik terjauh dalam ${e.proofMoveBars} bar · R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(1) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)}`);
-      return lines.join("\n");
-    }
-
-    if (isRetest) {
-      const res = c.signal === SIG_RETEST_RES;
-      lines.push(res
-        ? "🔵 RETEST RESISTANCE — KEMUNGKINAN TEMBUS KE ATAS. Harga balik ke garis ini tetapi seller yang dulu menahan sudah tidak muncul."
-        : "🟠 RETEST SUPPORT — KEMUNGKINAN JEBOL KE BAWAH. Harga balik ke garis ini tetapi buyer yang dulu menahan sudah tidak muncul.");
-      lines.push(`GARIS MC: ${fmtMarketCap(e.lineMc)}   (${res ? "HIGH resistance" : "LOW support"})`);
-      lines.push(`level asal: ${fmtTs(e.levelStart)} WIB · retest: ${fmtBar(s)} WIB`);
-      lines.push(`R saat retest ${Math.abs(e.setupR).toFixed(2)} = ${e.rNorm.toFixed(2)}× acuan (${e.rBaseline.toFixed(1)}) → tidak ada perlawanan berarti`);
-      lines.push(`cumCVD ${res ? "naik" : "turun"} · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}% · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL`);
       return lines.join("\n");
     }
 
@@ -1827,23 +1607,15 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       const px = x(i), py = b.high != null ? yP(b.high) : padT + 10;
       const isRes = ev.signal === SIG_RESISTANCE;
       const isSup = ev.signal === SIG_SUPPORT;
-      const isRtRes = ev.signal === SIG_RETEST_RES;
-      const isRtSup = ev.signal === SIG_RETEST_SUP;
-      const col = isRes ? "#ef4444" : isSup ? "#22c55e" : isRtRes ? "#38bdf8" : "#f59e0b";
+      if (!isRes && !isSup) return;
+      const col = isRes ? "#ef4444" : "#22c55e";
       const lineTxt = fmtMarketCap(ev.ev && ev.ev.lineMc);
       const ttl = `${ev.signal} ${fmtBar(b)} | garis MC ${lineTxt}`;
-      if (isRes || isSup) {
-        // Garis level: HIGH untuk resistance, LOW untuk support.
-        const yHi = b.high != null ? yP(b.high) : py, yLo = b.low != null ? yP(b.low) : py;
-        const yLine = isRes ? yHi : yLo;
-        s1 += `<rect x="${px - 5}" y="${Math.min(yHi, yLo)}" width="10" height="${Math.max(2, Math.abs(yLo - yHi))}" fill="${col}" opacity="0.55" rx="1.5"><title>${ttl}</title></rect>`;
-        s1 += `<line x1="${padL}" y1="${yLine}" x2="${W - padR}" y2="${yLine}" stroke="${col}" stroke-width="1.6" stroke-dasharray="5 3" opacity="0.85"><title>${ttl}</title></line>`;
-      } else {
-        // retest = wajik, digambar tepat di garis level yang dikunjungi
-        const lp = ev.ev && ev.ev.linePrice;
-        const yr = lp != null && lp > 0 ? yP(lp) : py;
-        s1 += `<polygon points="${px},${yr - 7} ${px + 6},${yr} ${px},${yr + 7} ${px - 6},${yr}" fill="${col}" stroke="#0b1220" stroke-width="1"><title>${ttl}</title></polygon>`;
-      }
+      // Garis level: HIGH untuk resistance, LOW untuk support.
+      const yHi = b.high != null ? yP(b.high) : py, yLo = b.low != null ? yP(b.low) : py;
+      const yLine = isRes ? yHi : yLo;
+      s1 += `<rect x="${px - 5}" y="${Math.min(yHi, yLo)}" width="10" height="${Math.max(2, Math.abs(yLo - yHi))}" fill="${col}" opacity="0.55" rx="1.5"><title>${ttl}</title></rect>`;
+      s1 += `<line x1="${padL}" y1="${yLine}" x2="${W - padR}" y2="${yLine}" stroke="${col}" stroke-width="1.6" stroke-dasharray="5 3" opacity="0.85"><title>${ttl}</title></line>`;
     });
 
     // ---- panel 2: R bertanda (atas=+R, bawah=−R) ----
@@ -1909,7 +1681,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   function downloadCSV(filename, csv) { const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
   // Export SATU file: recap + BARS (harga & R di depan, siap di-chart) + RAW TRADES.
   // SATU export. Ringkas (KB, bukan MB) tapi cukup untuk analisa ulang:
-  // bars lengkap + level & retest yang terdeteksi + jejak forensik wick.
+  // bars lengkap + level yang terdeteksi + jejak forensik wick.
   // Raw trades sengaja TIDAK disertakan — itu yang membuat file ~100x lebih
   // besar. Sebagai gantinya tiap bar membawa high/low versi mentah, jumlah
   // trade debu, dan trade terbesar, sehingga anomali wick tetap bisa dilacak.
@@ -1926,9 +1698,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     L.push("# mint=" + mint);
     L.push("# mc_context_source=" + mcContextSource + " current_mc_usd=" + (cachedMcUsd || "") + " effective_supply=" + (cachedMcPerPrice || ""));
     L.push("# timezone=WIB (Asia/Jakarta, UTC+7) — sama dengan GMGN");
-    L.push("# tf=" + activeTf.label + " bars=" + bars.length
-      + " | total_clusters=" + (allBars.length ? allBars[allBars.length - 1].cluster + 1 : 0)
-      + " | active_cluster=" + (selectedCluster == null ? "latest" : selectedCluster));
+    L.push("# tf=" + activeTf.label + " bars=" + bars.length);
     L.push("# r_baseline_median=" + (rBase != null ? rBase.toFixed(4) : ""));
     L.push("# current_signal=" + cls.signal + " conf=" + (cls.conf || 0));
     L.push("#");
@@ -1946,22 +1716,12 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       }
     }
     L.push("#");
-    // Status pemantauan retest: kenapa retest belum muncul untuk tiap level.
-    if (scan.levels && scan.levels.length) {
-      L.push("# === STATUS RETEST ===");
-      for (const lv of scan.levels) {
-        const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
-        L.push(`#   ${lv.kind} ${line != null ? fmtMarketCap(line) : "—"} · armed=${lv.armed ? "ya" : "belum"}`);
-        L.push("#     " + retestDiagText(lv));
-      }
-      L.push("#");
-    }
 
-    L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}) yang TERBUKTI: dalam <=${LVL_CONFIRM_BARS} bar berikutnya R runtuh <=${LVL_R_DROP * 100}%, cumCVD dan harga bergerak >=${LVL_MIN_MOVE_PCT}% ke arah yang benar (harga diukur ke TITIK TERJAUH, bukan bar terakhir). Bukti dinilai MAJU bar per bar: begitu terbukti level tidak bisa dibatalkan penembusan yang datang belakangan; penembusan >${LVL_FAIL_PCT}% SEBELUM terbukti = GAGAL, tidak jadi level. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP. RETEST = harga kembali menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) dengan |R| <${LVL_RETEST_R_MAX}x acuan; retest resistance butuh cumCVD naik, retest support butuh cumCVD turun.`);
+    L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}) yang TERBUKTI: dalam <=${LVL_CONFIRM_BARS} bar berikutnya R runtuh <=${LVL_R_DROP * 100}%, cumCVD dan harga bergerak >=${LVL_MIN_MOVE_PCT}% ke arah yang benar (harga diukur ke TITIK TERJAUH, bukan bar terakhir). Bukti dinilai MAJU bar per bar: begitu terbukti level tidak bisa dibatalkan penembusan yang datang belakangan; penembusan >${LVL_FAIL_PCT}% SEBELUM terbukti = GAGAL, tidak jadi level. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP.`);
     L.push(`# NOTE: R MONITOR. R = |cvd_clean| / |chg_pct|, dinormalisasi ke r_baseline_median. r_state: BEBAS <${R_BAND_FREE}x, NORMAL, SERAP >=${R_BAND_ABSORB}x, TEMBOK_SELLER/TEMBOK_BUYER >=${R_BAND_WALL}x. Akhiran _RAKSASA hanya untuk candle yang lolos ambang sinyal (|R| >=${R_MIN_ABS} DAN lonjakan >=${R_SPIKE_MULT}x bar sebelumnya) sekaligus >=${R_BAND_BLAZE}x acuan; rasio besar tapi |R| kecil TIDAK dihitung raksasa karena tidak akan pernah jadi sinyal. +R = order SELL menahan, -R = order BUY menahan.`);
     L.push(`# NOTE: FORENSIK WICK. high/low hanya dari trade >=${HL_MIN_SOL} SOL. high_raw/low_raw = versi TANPA saringan itu; kalau berbeda jauh berarti ada trade debu di harga ekstrem (lihat dust_tx). Kolom max_trade_sol = trade terbesar di bar itu.`);
     L.push("#");
-    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
+    L.push("bar_wib,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
 
     for (let bi = 0; bi < bars.length; bi++) {
       const b = bars[bi];
@@ -1971,7 +1731,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       const hRaw = (b.highRawMc != null && b.highMc != null && Math.abs(b.highRawMc - b.highMc) > b.highMc * 1e-9) ? b.highRawMc.toFixed(2) : "";
       const lRaw = (b.lowRawMc != null && b.lowMc != null && Math.abs(b.lowRawMc - b.lowMc) > b.lowMc * 1e-9) ? b.lowRawMc.toFixed(2) : "";
       L.push([
-        wibIso(b.start), b.cluster,
+        wibIso(b.start),
         b.close != null ? b.close.toExponential(4) : "",
         b.closeMc != null ? b.closeMc.toFixed(2) : "",
         b.lowMc != null ? b.lowMc.toFixed(2) : "",
@@ -1999,8 +1759,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   const SIG_META = {
     [SIG_RESISTANCE]:  { color: "#ef4444", label: "🔴 RESISTANCE TERBENTUK", mark: "🔴" },
     [SIG_SUPPORT]:     { color: "#22c55e", label: "🟢 SUPPORT TERBENTUK", mark: "🟢" },
-    [SIG_RETEST_RES]:  { color: "#38bdf8", label: "🔵 RETEST RESISTANCE", mark: "🔵" },
-    [SIG_RETEST_SUP]:  { color: "#f59e0b", label: "🟠 RETEST SUPPORT", mark: "🟠" },
     NETRAL: { color: "#94a3b8", label: "⚪ NETRAL", mark: "⚪" }
   };
   function updateUI() {
@@ -2009,7 +1767,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     const allTrades = getSortedTrades();
     const allBars = buildBars(allTrades);
     const freshTaggedTotal = new Set(allTrades.filter(t => hasFreshTag(t.tags || [])).map(t => t.maker)).size;
-    populateClusterSelect(allBars);
     const bars = activeBars(allBars);
     const cls = classify(bars);
     const countEl = document.getElementById("gmgn-badge-count"), mcBadge = document.getElementById("gmgn-mc-badge"), doneFlag = document.getElementById("gmgn-done-flag"), statusText = document.getElementById("gmgn-status-text");
@@ -2026,24 +1783,11 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     if (shEl) {
       const scanAll = scanSignals(bars);
       const evs = scanAll.events.slice().reverse();
-      const lvStatus = (scanAll.levels || []).slice().reverse().map(lv => {
-        const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
-        return { kind: lv.kind, line, txt: retestDiagText(lv), armed: !!lv.armed };
-      });
-      const sig = evs.map(e => eventKey(e) + ":" + e.conf + ":" + (e.grade || "")).join("|")
-        + "||" + lvStatus.map(x => x.txt).join("|");
+      const sig = evs.map(e => eventKey(e) + ":" + e.conf + ":" + (e.grade || "")).join("|");
       if (shEl._sig !== sig) {
         shEl._sig = sig;
-        const diagHtml = !lvStatus.length ? "" :
-          `<div class="gmgn-diag-box"><div class="gmgn-diag-head">Status pemantauan retest</div>` +
-          lvStatus.map(x =>
-            `<div class="gmgn-diag-row"><span class="gmgn-diag-dot" style="background:${x.kind === "resistance" ? "#ef4444" : "#22c55e"}"></span>` +
-            `<div><b>${x.kind === "resistance" ? "Resistance" : "Support"} ${fmtMarketCap(x.line)}</b>` +
-            `<span class="gmgn-diag-arm">${x.armed ? "siap" : "menunggu harga menjauh"}</span>` +
-            `<div class="gmgn-diag-why">${esc(x.txt)}</div></div></div>`).join("") +
-          `</div>`;
         if (!evs.length) {
-          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada level terbukti. Penyerapan yang gagal tidak ditampilkan.</div>` + diagHtml;
+          shEl.innerHTML = `<div class="gmgn-hist-empty">Belum ada level terbukti. Penyerapan yang gagal tidak ditampilkan.</div>`;
         } else {
           shEl.innerHTML =
             `<div class="gmgn-hist-head"><span>Sinyal & detail</span><span>Metric</span></div>` +
@@ -2054,12 +1798,9 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
               const open = openDetailKey === key;
               const mark = m.mark || "⚪";
               const gc = e.gradeColor || "#94a3b8";
-              const isLvl = e.signal === SIG_RESISTANCE || e.signal === SIG_SUPPORT;
               const mcTxt = e.ev && e.ev.lineMc != null
                 ? `MC ${fmtMarketCap(e.ev.lineMc)}` : "MC —";
-              const det = isLvl
-                ? `${fmtTs(e.setup.start)} · ${mcTxt} · R ${Math.abs(e.ev.setupR).toFixed(1)} (${e.ev.rMult.toFixed(0)}×)`
-                : `${fmtTs(e.setup.start)} · ${mcTxt} · R ${e.ev.rNorm.toFixed(2)}× acuan`;
+              const det = `${fmtTs(e.setup.start)} · ${mcTxt} · R ${Math.abs(e.ev.setupR).toFixed(1)} (${e.ev.rMult.toFixed(0)}×)`;
               return `<div class="gmgn-hist-item${open ? " is-open" : ""}" data-key="${esc(key)}">
                 <div class="gmgn-hist-row">
                   <span class="gmgn-hist-sig" style="color:${col};">${mark} ${e.signal}</span>
@@ -2069,7 +1810,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
                 <div class="gmgn-hist-tip">${esc(buildNarrative(e))}</div>
                 <div class="gmgn-hist-detail"${open ? "" : " hidden"}>${esc(buildNarrative(e))}</div>
               </div>`;
-            }).join("") + diagHtml;
+            }).join("");
           shEl.querySelectorAll(".gmgn-hist-item").forEach(item => {
             item.addEventListener("click", () => {
               const key = item.getAttribute("data-key");
@@ -2214,7 +1955,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       #gmgn-effort-widget .gmgn-diag-head { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
       #gmgn-effort-widget .gmgn-diag-row { display: flex; gap: 7px; align-items: flex-start; padding: 5px 0; font-size: 12px; color: #cbd5e1; }
       #gmgn-effort-widget .gmgn-diag-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
-      #gmgn-effort-widget .gmgn-diag-arm { margin-left: 6px; font-size: 10px; color: #64748b; }
+
       #gmgn-effort-widget .gmgn-diag-why { color: #94a3b8; font-size: 11px; margin-top: 2px; line-height: 1.45; }
       #gmgn-effort-widget .gmgn-hist-head { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
       #gmgn-effort-widget .gmgn-hist-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px; grid-template-areas: "sig grade" "meta meta"; gap: 3px 10px; align-items: start; }
@@ -2269,7 +2010,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.14</span>
+        <span class="t">🥄 SMART SEROK v9.3.0</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2287,7 +2028,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-reset">🧹 Reset</button>
           </div>
           <div class="gmgn-row">
-            <select id="gmgn-cluster" class="gmgn-inp" title="Pilih klaster aktivitas untuk chart & analisa"><option value="">latest (auto)</option></select>
             <select id="gmgn-cooldown" class="gmgn-inp">
               <option value="500">500ms</option><option value="800" selected>800ms</option><option value="1200">1.2s</option><option value="2000">2s</option>
             </select>
@@ -2316,7 +2056,6 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
           🔴 RESISTANCE / 🟢 SUPPORT TERBENTUK: candle penyerapan (|R| ≥${R_SPIKE_MULT}× bar sebelumnya DAN |R| ≥${R_MIN_ABS}) yang TERBUKTI — dalam ≤${LVL_CONFIRM_BARS} bar berikutnya R runtuh ≤${LVL_R_DROP * 100}%, cumCVD dan harga bergerak ≥${LVL_MIN_MOVE_PCT}% ke arah yang benar. Harga diukur ke TITIK TERJAUH yang dicapai, bukan ke bar terakhir — level tetap sah walau harga memantul balik setelahnya.
           GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dinyatakan dalam MARKET CAP. HIGH/LOW hanya dihitung dari trade ≥${HL_MIN_SOL} SOL supaya trade debu tidak menggeser garis.
           Penyerapan yang harganya justru menembus level &gt;${LVL_FAIL_PCT}% dianggap GAGAL: tidak jadi level dan tidak ditampilkan.
-          🔵 RETEST RESISTANCE / 🟠 RETEST SUPPORT: harga balik menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) tetapi |R| hanya &lt;${LVL_RETEST_R_MAX}× acuan — penjaga level tidak hadir lagi. Retest resistance butuh cumCVD naik (kemungkinan tembus ke atas); retest support butuh cumCVD turun (kemungkinan jebol ke bawah).
         </div>
       </div>
     </div>`;
@@ -2332,8 +2071,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     });
     paintModeBtn();
     document.getElementById("gmgn-btn-scroll").addEventListener("click", () => { isAutoScrolling ? stopAutoScroll(false) : startAutoScroll(); });
-    document.getElementById("gmgn-btn-reset").addEventListener("click", () => { capturedTrades.clear(); walletTagRegistry.clear(); detectedFromTs = null; detectedToTs = null; selectedCluster = null; cachedMcUsd = 0; cachedSupply = 0; cachedPriceUsd = 0; cachedMcPerPrice = 0; cachedHolderSupply = 0; cachedTokenSymbol = ""; mcContextSource = "none"; holderFetchMint = null; holderFetchLastAt = 0; Object.assign(captureStats, { requests: 0, seen: 0, recorded: 0, dup: 0, outOfRange: 0, noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "Direset manual", lastTs: Date.now() }); updateUI(); });
-    document.getElementById("gmgn-cluster").addEventListener("change", (e) => { selectedCluster = e.target.value === "" ? null : parseInt(e.target.value); updateUI(); });
+    document.getElementById("gmgn-btn-reset").addEventListener("click", () => { capturedTrades.clear(); walletTagRegistry.clear(); detectedFromTs = null; detectedToTs = null; cachedMcUsd = 0; cachedSupply = 0; cachedPriceUsd = 0; cachedMcPerPrice = 0; cachedHolderSupply = 0; cachedTokenSymbol = ""; mcContextSource = "none"; holderFetchMint = null; holderFetchLastAt = 0; Object.assign(captureStats, { requests: 0, seen: 0, recorded: 0, dup: 0, outOfRange: 0, noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "Direset manual", lastTs: Date.now() }); updateUI(); });
     document.getElementById("gmgn-btn-dl").addEventListener("click", exportAll);
     document.getElementById("gmgn-btn-min").addEventListener("click", () => { const body = document.getElementById("gmgn-body"), btn = document.getElementById("gmgn-btn-min"); if (body.style.display === "none") { body.style.display = "flex"; btn.innerText = "—"; } else { body.style.display = "none"; btn.innerText = "+"; } });
     // drag-to-move via header (tombol di header tetap bisa diklik)
