@@ -246,3 +246,52 @@ berlapis):
   ke-24 mereproduksi bug lama (logika v9.2.15 dapat 500/3500 trade),
   sisanya memvalidasi walk: ramai/sepi, gap, token baru listing,
   cursor macet, batas halaman, stop, error.
+---
+
+## 2026-08-27 — Validasi level DIHAPUS total: LEVEL INSTAN (v9.2.17 + v9.2.18)
+
+**Masalah:** v9.2.17 sudah membuang syarat gerak harga >=5% dari validasi, tapi mesin
+pembuktian masih ada: level baru lahir setelah <=12 bar (R runtuh <=50% + arah cumCVD
+searah) dan bisa dibatalkan kalau harga menembus >2% sebelum terbukti. Yang
+ditindaklanjuti pengguna ternyata bukan "level yang terbukti", melainkan candle R BESAR
+itu sendiri — mesin validasi cuma menambah latensi dan kalimat "penyerapan gagal".
+
+**Keputusan:**
+- **v9.2.17** — sinyal RETEST RESISTANCE / RETEST SUPPORT DIHAPUS total. Tinggal 2
+  sinyal: RESISTANCE TERBENTUK / SUPPORT TERBENTUK. Ikut terhapus:
+  LVL_LINE_PAD_PCT, LVL_EXIT_PCT, LVL_RETEST_MIN_GAP, LVL_RETEST_R_MAX, SIG_RETEST_*,
+  makeRetestEvent, levelLine, touchesLine, retestDiagText, arming (lv.armed/pendingArm),
+  panel STATUS PEMANTAUAN RETEST, section "=== STATUS RETEST ===" di export, wajik
+  retest di chart, entri SIG_META. Syarat LVL_MIN_MOVE_PCT (harga wajib >=5%) dihapus
+  dari validasi — pergerakan harga hanya INFO (tetap dicatat di narasi + export).
+- **v9.2.18** — validasi level DIHAPUS TOTAL. Konstanta LVL_CONFIRM_BARS,
+  LVL_MIN_CONFIRM_BARS, LVL_R_DROP, LVL_FAIL_PCT dan fungsi verifyAbsorption()
+  dicabut (bersama status confirmed/pending/failed dan pengukuran titik terjauh).
+  Candle penyerapan (|R| >=10x bar sebelumnya DAN |R| >=50, effort >=3 SOL) LANGSUNG
+  jadi garis level di bar yang sama. **Tidak ada lagi "penyerapan gagal"**; level tidak
+  dibatalkan oleh penembusan harga yang datang belakangan.
+- **Aturan dasar baru: R BESAR = level.** Sekalian: TIDAK ADA status tunggu apa pun di
+  mesin — scanSignals mengembalikan `pending: null` selalu.
+
+**Tetap tidak diubah:** ambang deteksi penyerapan (R_SPIKE_MULT=10, R_MIN_ABS=50,
+ABSORB_MIN_CVD=3), penanda RAPUH (v9.2.15), fetch walk (v9.2.16), R MONITOR.
+
+**Tes:** suite `tests/regression.js` disesuaikan — tes 07/08 (verifyAbsorption) dihapus,
+tes 19/20 dibersihkan dari klausa retest, tes 23 dilepas dari konstanta yang sudah mati,
+lalu ditambahkan tes 35 (RETEST + seluruh konstanta validasi tidak ada lagi, baik di
+export maupun di sumber), 36 (level lahir di bar penyerapan walau tidak ada bar
+sesudahnya dan walau harga <5%), 37 (penembusan tidak membatalkan level), 38 (tanpa R
+besar tidak ada level: |R| <50, lonjakan <10x, effort <3 SOL — masing-masing diisolasi).
+Total 36 tes, LULUS semua.
+
+**Status: SELESAI** — ter-merge ke `main` lewat PR #9 (v9.2.17 + v9.2.18).
+
+> **Catatan kehilangan kerja (penting, untuk sesi berikutnya).** Kedua commit ini
+> sempat ADA di branch sesi (`2a0be80` v9.2.17, `67fb224` v9.2.18) tapi sesi ditutup
+> sistem sebelum sempat di-push, jadi kerja itu tidak ada di GitHub dan tidak ada di
+> sandbox baru. Pemulihannya hanya mungkin karena file hasil masih dipegang user:
+> ZIP diunggah lewat portal (`tools/upload_portal.py`, POST /upload) lalu di-commit.
+> **Aturan baru: push + buat PR SEGERA setelah setiap commit yang disetujui user** —
+> jangan menumpuk commit lokal di ujung sesi. Upload portal sebaiknya menyertakan
+> `tests/regression.js` dan `DECISIONS.md`; arsip portal hanya berisi 6 file ekstensi,
+> sehingga suite dan catatan keputusan tidak ikut berpindah.

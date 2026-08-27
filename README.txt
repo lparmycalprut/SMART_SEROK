@@ -1,82 +1,43 @@
-SMART SEROK v9.2.16 — LEVEL ENGINE
+SMART SEROK v9.2.18 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
 
-PERUBAHAN BESAR
----------------
+PERUBAHAN BESAR (v9.2.17 — v9.2.18)
+-----------------------------------
 Semua sinyal lama DIHAPUS (WASPADA DUMP, SIAP2 PUMP, SERAP SELL, BATTLE TERJADI).
-Sekarang hanya ada 4 sinyal, semuanya berbasis level.
+Sinyal RETEST RESISTANCE / RETEST SUPPORT juga DIHAPUS di v9.2.17 — sekarang
+tinggal 2 sinyal, semuanya berbasis level.
 
-Ide dasarnya: R yang melonjak menandakan ada yang menyerap. Tapi penyerapan bisa
-BERHASIL atau GAGAL. Hanya penyerapan yang TERBUKTI berhasil yang melahirkan level.
-Level itu kemudian dipantau: saat harga kembali ke sana dengan R yang hanya normal,
-artinya penjaga level sudah tidak hadir lagi — tidak ada supply/demand tersisa di situ.
+Ide dasarnya: R yang melonjak menandakan ada yang menyerap. Yang penting adalah
+R BESAR. Sejak v9.2.18 TIDAK ADA validasi apa pun: candle penyerapan dengan
+R besar LANGSUNG jadi garis level saat muncul — tidak menunggu R runtuh,
+tidak menunggu arah cumCVD, tidak peduli pergerakan harga, dan tidak bisa
+dibatalkan oleh penembusan. R besar = level.
 
-EMPAT SINYAL
+DUA SINYAL
 ------------
 1. RESISTANCE TERBENTUK
    Candle penyerapan BUY: |R| ≥ 10× bar sebelumnya DAN |R| ≥ 50, R bertanda POSITIF
-   (net BUY diserap seller). Lalu TERBUKTI dalam ≤12 bar berikutnya:
-     - R runtuh ≤50% dari R candle penyerapan
-     - cumCVD turun
-     - harga turun ≥5% DIUKUR KE TITIK TERJAUH, bukan ke bar terakhir
-
-   Contoh: high 121,76K lalu turun sampai 49,54K (−59%). Yang membuktikan level
-   adalah titik 49,54K itu, meskipun setelahnya harga memantul naik lagi.
+   (net BUY diserap seller). LANGSUNG jadi garis level di candle itu — tanpa
+   menunggu pembuktian apa pun.
    GARIS LEVEL = HIGH candle penyerapan, dinyatakan dalam MARKET CAP.
    (rentang LOW–HIGH tetap ditampilkan sebagai konteks)
 
 2. SUPPORT TERBENTUK
-   Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), lalu terbukti dengan
-   R runtuh, cumCVD naik, dan harga naik ≥5% ke titik terjauh.
+   Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), |R| ≥ 10× bar
+   sebelumnya DAN |R| ≥ 50. LANGSUNG jadi garis level di candle itu.
    GARIS LEVEL = LOW candle penyerapan.
-
-3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
-   Harga kembali menyentuh GARIS resistance (HIGH candle penyerapan), TETAPI:
-     - |R| hanya ≤1,2× median |R| klaster aktif (tidak ada perlawanan berarti)
-     - cumCVD NAIK
-   Artinya seller yang dulu menjaga level itu sudah tidak ada. No supply lagi di situ.
-
-4. RETEST SUPPORT — KEMUNGKINAN BREAKDOWN
-   Harga kembali menyentuh GARIS support (LOW candle penyerapan) dengan R normal
-   dan cumCVD TURUN. Buyer yang dulu menjaga sudah tidak hadir.
-
-RETEST = KEMBALI KE GARIS, BUKAN KE PITA
-----------------------------------------
-Retest diukur terhadap SATU GARIS:
-  resistance -> HIGH candle penyerapan
-  support    -> LOW  candle penyerapan
-Toleransi sentuhan 0,5% dari harga garis.
-
-Selain itu harga wajib PERGI dulu sebelum boleh dihitung "kembali": harus menjauh
-minimal 2% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
-harga yang masih berkeliaran di sekitar level yang baru terbentuk akan salah
-terbaca sebagai retest. Setelah satu alert, level dikunci lagi sampai harga
-kembali menjauh — jadi tetap satu alert per kunjungan.
-
-PENYERAPAN GAGAL
-----------------
-Jika setelah penyerapan harga justru menembus level >2% ke arah yang berlawanan
-dengan penyerapan, itu dianggap GAGAL:
-  - tidak melahirkan level
-  - tidak muncul di daftar sinyal sama sekali
-Ini yang membedakan v9.2.0 dari versi lama: dulu spike R langsung jadi sinyal,
-sekarang wajib dibuktikan dulu oleh pergerakan harga sesudahnya.
 
 AMBANG (content.js)
 -------------------
   R_SPIKE_MULT      10     |R| minimal 10x bar sebelumnya
   R_MIN_ABS         50     lantai |R| — di bawah ini bukan penyerapan
   ABSORB_MIN_CVD    3 SOL  lantai effort agar R tidak artefak pembagian
-  LVL_CONFIRM_BARS  12     jendela pembuktian
-  LVL_R_DROP        0.5    R sesudahnya harus ≤50%
-  LVL_MIN_MOVE_PCT  5      harga wajib bergerak ≥5% ke titik terjauh
-  LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
-  LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
-  LVL_EXIT_PCT      2      harga wajib menjauh ≥2% dari garis sebelum retest
-  LVL_RETEST_R_MAX  1.5    retest valid bila |R| <1,5× acuan (= band normal R MONITOR)
+  (v9.2.17: LVL_MIN_MOVE_PCT, LVL_LINE_PAD_PCT, LVL_EXIT_PCT, LVL_RETEST_R_MAX
+   DIHAPUS bersama sinyal retest; v9.2.18: LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS,
+   LVL_R_DROP, LVL_FAIL_PCT DIHAPUS bersama seluruh validasi — lihat bagian bawah)
 
 R MONITOR
 ---------
@@ -86,7 +47,7 @@ kondisi perlawanan per candle: BEBAS / NORMAL / SERAP / TEMBOK / SEPI.
 
 MARKET CAP
 ----------
-Level dan retest selalu dinyatakan dalam MARKET CAP, bukan price. Ekstensi
+Level selalu dinyatakan dalam MARKET CAP, bukan price. Ekstensi
 mengambil effective supply dari holder, lalu token_info, lalu inferensi.
 Jika belum tertangkap, detail menampilkan "MC belum tersedia".
 
@@ -591,3 +552,85 @@ multi-rantai), token sepi 3 hari, gap 2 hari di tengah data, token baru
 listing (laporan parsial 2/7 hari), cursor macet, batas halaman rantai,
 batas halaman global, shouldStop, error jaringan, dan normalisasi
 timestamp. Total 34 tes: LULUS semua.
+
+================================================================
+SINYAL RETEST DIHAPUS + SYARAT GERAK HARGA ≥5% DIHAPUS (v9.2.17)
+================================================================
+MASALAH
+Dua penyederhanaan yang diminta pengguna:
+  1. Sinyal RETEST RESISTANCE / RETEST SUPPORT dianggap tidak perlu lagi.
+     Level cukup lahir sekali; pantauan "harga kembali ke garis dengan R
+     normal" (arm/exit/diagnosa/panel STATUS RETEST) menambah kompleksitas
+     tanpa menambah keputusan yang ditindaklanjuti.
+  2. Validasi level menuntut harga bergerak ≥5% (LVL_MIN_MOVE_PCT) ke titik
+     terjauh sebagai BUKTI. Padahal esensi penyerapan adalah R BESAR —
+     penyerapan dengan R besar yang terbukti (R runtuh + cumCVD searah)
+     sudah cukup sah menjadi level, berapa pun besarnya pergerakan harga.
+
+PERBAIKAN
+- Sinyal RETEST RESISTANCE / RETEST SUPPORT DIHAPUS total. Sekarang hanya
+  2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK. Semua mekanisme
+  retest ikut dihapus: konstanta LVL_LINE_PAD_PCT, LVL_EXIT_PCT,
+  LVL_RETEST_MIN_GAP, LVL_RETEST_R_MAX; SIG_RETEST_RES/SIG_RETEST_SUP;
+  fungsi makeRetestEvent, levelLine, touchesLine, retestDiagText; arming
+  (lv.armed/pendingArm) di scanSignals; panel "STATUS PEMANTAUAN RETEST";
+  section "=== STATUS RETEST ===" di export; wajik retest di chart
+  lintasan; entri SIG_META; dan penjelasan retest di catatan UI.
+- Syarat LVL_MIN_MOVE_PCT (harga wajib bergerak ≥5%) DIHAPUS dari
+  verifyAbsorption. Level sekarang TERBUKTI hanya oleh dua hal:
+    a. R runtuh ≤50% dari R candle penyerapan, dan
+    b. cumCVD bergerak ke arah yang benar (resistance: turun; support:
+       naik) — diukur ke TITIK TERJAUH, bukan ke bar terakhir.
+  Pergerakan harga tetap DICATAT (movePct masuk narasi + export sebagai
+  info), bukan lagi syarat lolos.
+- Penembusan >LVL_FAIL_PCT (2%) SEBELUM terbukti tetap = GAGAL, tidak
+  jadi level. Bukti tetap dinilai MAJU bar per bar (sekali terbukti tidak
+  bisa dibatalkan).
+
+TIDAK DIUBAH
+Semua ambang deteksi penyerapan (R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD),
+jendela pembuktian (LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS, LVL_R_DROP),
+LVL_FAIL_PCT, seluruh R MONITOR, penanda RAPUH (v9.2.15), dan mekanisme
+fetch walk (v9.2.16).
+
+REGRESI
+3 tes baru: (35) RETEST tidak ada lagi — konstanta/helper retest tidak
+di-export lagi dan bar yang dulu memicu retest kini diam; (36) level
+CONFIRMED walau harga hanya bergerak <5% (R runtuh + cumCVD turun);
+(37) arah cumCVD tetap syarat — R runtuh tapi cumCVD naik tidak
+confirmed. Total 37 tes: LULUS semua.
+
+================================================================
+VALIDASI LEVEL DIHAPUS TOTAL — LEVEL INSTAN (v9.2.18)
+================================================================
+MASALAH
+Prinsip "yang penting adalah R besar" (v9.2.17) masih menyisakan
+mesin validasi: level baru lahir setelah ≤12 bar pembuktian (R runtuh
+≤50% + arah cumCVD) dan bisa dibatalkan kalau harga menembus >2%
+sebelum terbukti. Mesin itu menambah latensi & kerumitan padahal
+yang ditindaklanjuti pengguna justru candle R BESAR-nya itu sendiri.
+
+PERBAIKAN
+- SELURUH validasi level DIHAPUS. Candle penyerapan (|R| ≥10× bar
+  sebelumnya DAN |R| ≥50, effort ≥3 SOL) LANGSUNG jadi garis level di
+  bar yang sama — tidak menunggu apa pun, tidak bisa "gagal".
+- Konstanta dihapus: LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS,
+  LVL_R_DROP, LVL_FAIL_PCT.
+- Fungsi verifyAbsorption() dihapus total (bersama status
+  confirmed/pending/failed dan pengukuran titik terjauh).
+- scanSignals disederhanakan: kandidat penyerapan -> langsung level.
+- Narasi/UI/export/chart disesuaikan: tidak ada lagi kalimat
+  "terbukti", "pembuktian", "penyerapan gagal"; label chart R MONITOR
+  kini "sinyal -> LANGSUNG jadi level (v9.2.18)".
+
+TIDAK DIUBAH
+Ambang deteksi penyerapan (R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD),
+penanda RAPUH (v9.2.15), fetch walk (v9.2.16), R MONITOR, dan seluruh
+mekanisme non-level.
+
+REGRESI
+Tes 07/08 (verifyAbsorption) dan 36/37 lama DIHAPUS; diganti: (36)
+level INSTAN — lahir di bar penyerapan walau tidak ada bar sesudahnya;
+(37) level TIDAK dibatalkan penembusan harga; (38) tanpa R besar
+tidak ada level. Tes 35 diperluas (konstanta validasi tidak di-export).
+Total 36 tes: LULUS semua.
