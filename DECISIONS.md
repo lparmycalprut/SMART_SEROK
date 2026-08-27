@@ -192,3 +192,57 @@ selesai; hanya absorpsi terdistribusi yang menciptakan defense berlapis.
 hanya changelog README yang belum. Supaya satu nomor versi = satu isi
 perubahan, fitur ini naik ke **v9.2.15** (bukan v9.2.14 seperti rencana
 awal), dan README di-backfill entri v9.2.14-nya.
+
+---
+
+## 2026-08-27 — Fetch N hari: walk bertahap, cache tidak memangkas rentang (v9.2.16)
+
+**Masalah:** Background Fetch untuk rentang N hari (7/14 hari, dsb.) hanya
+mengambil ~1 hari terakhir lalu berhenti "DONE". **Akar** (dua bug
+berlapis):
+1. API GMGN memotong `from` yang jauh di masa lalu (request
+   `from=7 hari lalu&to=now` hanya mengembalikan ~1 hari). backgroundFetch
+   v9.2.15 mengirim satu from/to lalu percaya satu rantai cursor — rantai
+   habis di ~1 hari, `next` null, dianggap selesai. Workaround untuk
+   pemotongan ini memang sudah ada di LIVE ("mundur dari now, tanpa from,
+   lalu fill gap"), tapi tidak dipakai backgroundFetch.
+2. Cache incremental mengganti `startTs` dengan `lastCachedTs + 1` —
+   dengan cache 1 hari, "fetch 7 hari" jadi top-up kecil dan 6 hari
+   lainnya tidak pernah di-fetch.
+
+**Keputusan:**
+- Inti fetch = `walkTradeRange()`: rentang dijalani mundur dalam
+  rantai-rantai cursor. Rantai baru selalu dimulai `to = oldest_dicapai - 1`;
+  cursor selalu dari respons sebelumnya; rantai yang terpotong (batas
+  halaman / `next` habis) diganti rantai baru; potongan kosong (gap data)
+  membuat boundary mundur `WALK_PROBE_STEP_SEC` (12 jam).
+  **Syarat desain:** langkah probe harus JAH < jendela tersirat API
+  (~1 hari) supaya potongan saling tumpang-tindih — tidak ada trade
+  terlewat. Dengan syarat itu walk terbukti lengkap untuk W (jendela
+  API) berapa pun >= langkah.
+- Konstanta baru: `FETCH_CHAIN_PAGES = 200` (batas per rantai),
+  `FETCH_MAX_PAGES = 1000` (pengaman global), `WALK_PROBE_STEP_SEC = 12h`,
+  `DEFAULT_RANGE_DAYS = 7` (rentang default saat user belum set filter
+  di halaman GMGN — sebelumnya from-kosong tanpa batas).
+- Cache: tetap di-seed (UI cepat, dedup tx_hash menampung overlap),
+  **TIDAK** memangkas rentang yang diminta.
+- `gmgnRequest()` = satu GET dengan 4x retry, dipisah dari walk supaya
+  mekanisme bisa dites tanpa browser (hook `__SMART_SEROK_TEST__`).
+- Laporan jernih, tidak pernah berhenti diam-diam:
+  - tertutup penuh → `✅ DONE X/X hari · N TX`
+  - data API tidak menutup rentang (token baru listing/limit provider)
+    → `⚠ A/X hari · data terlama <tanggal>` + alert + console.warn
+  - kena batas halaman global → `⚠ Batas 1000 halaman — A/X hari`
+  - error jaringan → `❌ Gagal di halaman N` + console.error
+  - progress per halaman di console: "fetch N hari: halaman K · +Z trade ·
+    tersimpan M TX · terlama <tanggal> · rantai baru #R".
+- LIVE full-window memakai walk yang sama (jendela 4 hari benar-benar
+  penuh, menggantikan dua pullPages 200+80 yang bisa kurang untuk token
+  ramai). Sinkron inkremental LIVE tidak berubah perilaku.
+- Tidak disentuh: semua ambang sinyal (R_MIN_ABS, R_SPIKE_MULT, LVL_*,
+  R_BAND_*, CONCENTRATION_FRAGILE_THRESHOLD), MAX_BARS, R_MON_*.
+  Tidak ada clustering/pengelompokan hari.
+- Tes: 11 tes baru (total 34) — fake API meniru pemotongan GMGN; tes
+  ke-24 mereproduksi bug lama (logika v9.2.15 dapat 500/3500 trade),
+  sisanya memvalidasi walk: ramai/sepi, gap, token baru listing,
+  cursor macet, batas halaman, stop, error.

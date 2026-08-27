@@ -1,4 +1,4 @@
-SMART SEROK v9.2.15 — LEVEL ENGINE
+SMART SEROK v9.2.16 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -521,3 +521,73 @@ tests/regression.js). Ditambah 6 tes baru: hitung concentration_ratio
 fragile=false (RAKSASA tapi terdistribusi), fragile=false (bukan RAKSASA
 meski konsentrasi tinggi), kolom export, dan regresi konstanta. Regresi
 23 tes (17 lama + 6 baru): LULUS semua.
+
+================================================================
+FETCH N HARI BERHENTI DI 1 HARI (v9.2.16)
+================================================================
+MASALAH
+Fetch untuk rentang N hari (Background Fetch, dengan range diset dari
+filter halaman GMGN — misal 7 hari, 14 hari) hanya berhasil mengambil
+data sampai 1 hari ke belakang, lalu berhenti dengan status "DONE".
+Data hari-hari sebelumnya tidak pernah ke-fetch, padahal endpoint
+sumber (GMGN token_trades — bar/candle di ekstensi ini dibangun dari
+raw trade ini, bukan endpoint OHLCV) punya data lebih jauh ke belakang.
+
+AKAR MASALAH
+Dua kesalahan di backgroundFetch() (v9.2.15):
+  1. API GMGN memotong `from` yang jauh di masa lalu: request
+     `from=7 hari lalu&to=now` hanya mengembalikan ~1 hari terakhir.
+     (Faktanya sudah diketahui — komentar lama di mode LIVE: "from jauh
+     di belakang sering dipotong API" — dan LIVE memang punya
+     workaround, TAPI backgroundFetch tidak memakainya.) backgroundFetch
+     lama mengirim SATU from/to lalu percaya satu rantai cursor: rantai
+     hanya berjalan ~1 hari, `next` habis, kode menganggap selesai.
+  2. Cache incremental mengganti `startTs` dengan `lastCachedTs + 1`,
+     sehingga "fetch 7 hari" dengan cache 1 hari (dari fetch/LIVE
+     sebelumnya) cuma mengambil trade SEBELUM trade terakhir cache —
+     sisa rentang tidak pernah di-fetch; yang tampil hanya isi cache.
+
+PERBAIKAN
+- Mekanisme fetch ditulis ulang menjadi WALK bertahap (walkTradeRange):
+  rentang dijalani mundur dari `to` dalam rantai-rantai cursor.
+  Rantai baru SELALU dimulai dari titik terlama yang sudah dicapai
+  (to = oldest - 1) dan cursor selalu diupdate dari respons
+  sebelumnya — jadi tidak ada "request berikutnya memakai timestamp
+  yang sama". Rantai yang terpotong (batas 200 halaman, atau `next`
+  habis di tengah) langsung diganti rantai baru — tidak ada break
+  prematur. Kalau sebuah potongan tidak mengandung trade (data hening /
+  gap), boundary mundur WALK_PROBE_STEP_SEC (12 jam) — sengaja lebih
+  pendek dari jendela tersirat API (~1 hari) supaya potongan saling
+  tumpang-tindih dan tidak ada trade yang terlewat.
+- Cache tidak lagi memangkas rentang yang diminta: cache tetap di-seed
+  (UI langsung terisi, dedup tx_hash menampung overlap), tapi fetch
+  SELALU menjalankan seluruh rentang [startTs, endTs].
+- Log progress per halaman di console, contoh:
+    [SMART SEROK] fetch 7 hari: halaman 12 · +200 trade · tersimpan 2.340 TX
+      · terlama 20 Agustus 03:00 · rantai baru #3
+  plus status di widget "FETCH hari 3/7 · 2.340 TX" — jadi kalau suatu
+  saat fetch berhenti prematur lagi, langsung kelihatan di mana.
+- Kalau API memang tidak punya data selama (token baru listing / limit
+  provider), fetch tetap mengambil SEMUA yang tersedia dan memberi tahu
+  JERNIH berapa hari yang benar-benar didapat vs diminta: status "⚠
+  2.0/7 hari · data terlama 24 Agustus" + alert + console.warn — tidak
+  lagi berhenti diam-diam dengan status DONE.
+- Rentang tanpa filter (user belum set range di halaman GMGN) memakai
+  DEFAULT_RANGE_DAYS = 7 hari, bukan from-kosong tanpa batas.
+- LIVE mode memakai walk yang sama, sehingga jendela 4 hari
+  (LIVE_FETCH_SEC) benar-benar tertutup penuh untuk token ramai, bukan
+  cuma 200+80 halaman pertama.
+
+TIDAK DIUBAH
+Semua ambang deteksi sinyal (R_MIN_ABS, R_SPIKE_MULT, ABSORB_MIN_CVD,
+LVL_*, R_BAND_*, CONCENTRATION_FRAGILE_THRESHOLD) — ini murni perbaikan
+mekanisme fetch data. Tidak ada clustering/pengelompokan hari.
+
+REGRESI
++11 tes baru untuk walkTradeRange dengan fake API yang meniru perilaku
+pemotongan GMGN (tes ke-24 mereproduksi bug lama: logika v9.2.15 hanya
+dapat 500 dari 3500 trade). Mencakup: token ramai 7 hari (3.500 trade,
+multi-rantai), token sepi 3 hari, gap 2 hari di tengah data, token baru
+listing (laporan parsial 2/7 hari), cursor macet, batas halaman rantai,
+batas halaman global, shouldStop, error jaringan, dan normalisasi
+timestamp. Total 34 tes: LULUS semua.
