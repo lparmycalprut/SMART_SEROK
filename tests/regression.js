@@ -15,8 +15,9 @@
  * LVL_R_DROP, LVL_FAIL_PCT, LVL_MIN_MOVE_PCT, verifyAbsorption) dan sinyal
  * RETEST DIHAPUS dari content.js. Sesuai README v9.2.18: tes 07/08 (verifyAbsorption)
  * DIHAPUS, tes 19/20 dibersihkan dari klausa retest, tes 23 dilepas dari konstanta
- * yang sudah mati, lalu ditambahkan tes 35-38. Total: 36 tes
- * (21 warisan + 11 fetch walk + 4 level instan).
+ * yang sudah mati, lalu ditambahkan tes 35-38. v9.2.19: +tes 39-40
+ * (open/close bebas trade debu). Total: 38 tes
+ * (21 warisan + 11 fetch walk + 6 terbaru: 4 level instan + 2 open/close debu).
  *
  * content.js adalah content script browser (IIFE, tanpa export). Suite ini
  * menjalankan file itu di sandbox Node; content.js memanggil hook
@@ -664,6 +665,66 @@ test("38 tanpa R besar tidak ada level: |R| <50 atau lonjakan <10x -> nol sinyal
   eq(api.scanSignals(thin).events.length, 0, "R besar semu dari bar tipis tidak jadi level");
 });
 
+// ══ REGRESI BARU — v9.2.19: OPEN/CLOSE bebas trade debu (2 tes) ═══════════
+// Kasus nyata 27 Agu 23:00: harga asli bar +3% (100,2 -> 103,3) tapi satu sell
+// debu 0,0000 SOL di akhir bar di harga 100,16 membuat chg_pct terbaca -0,04%
+// dan R meledak jadi TEMBOK. Sebabnya open/close (dulu pakai SEMUA trade)
+// memakai trade debu sebagai harga tutup; high/low sudah disaring sejak
+// v9.2.5 (HL_MIN_SOL). Tes ini menjaga aturan: open/close = trade >=0.001 SOL,
+// versi mentah tetap tersedia untuk forensik, dan bar yang seluruhnya debu
+// di-fallback ke semua trade.
+
+test("39 OPEN/CLOSE bebas trade debu: bar +3% tidak lagi terbaca -0,04%", () => {
+  const trades = [
+    T(22, 100, "a", "buy", 5, 100), T(22, 3500, "b", "sell", 5, 100.2),
+    // bar 23: open jujur 100.2 -> close jujur 103.3 (+3,09%)
+    T(23, 60, "a", "buy", 4, 100.2), T(23, 2000, "c", "buy", 5, 103.3),
+    // satu sell DEBU di akhir bar di harga 100,16 (≈ harga open) -> dulu -0,04%
+    T(23, 3599, "dust", "sell", 0.00001, 100.16),
+  ];
+  const bars = api.buildBars(trades, B + 24 * H + 60);
+  const b = bars.find(x => x.start === B + 23 * H);
+  ok(b, "bar 23 terbentuk");
+  near(b.open, 100.2, 1e-9, "open = trade NYATA pertama (bukan debu)");
+  near(b.close, 103.3, 1e-9, "close = trade NYATA terakhir (bukan debu)");
+  near(b.priceChgPct, (103.3 / 100.2 - 1) * 100, 1e-9, "chg = +3,09% — bukan -0,04%");
+  near(b.openRaw, 100.2, 1e-9, "openRaw = versi mentah (sama dengan yang dipakai)");
+  near(b.closeRaw, 100.16, 1e-9, "closeRaw = versi mentah — debu tetap terlihat");
+  eq(b.dustTx, 1, "satu trade debu tetap dihitung");
+  eq(b.high, 103.3, "HIGH tetap dari trade nyata");
+  // R sekarang wajar untuk bar +3% (effort 9 SOL / chg 3,09% ≈ 2,9),
+  // bukan ratusan kali kebalikan dari chg semu -0,04%.
+  ok(b.R > 1 && b.R < 10, "R tidak meledak (R=" + (b.R || 0).toFixed(2) + ")");
+  const r = api.readR(b, 1, bars.find(x => x.start === B + 22 * H));
+  ok(r.code !== "TEMBOK", "bar +3% tidak lagi dibaca sebagai TEMBOK");
+});
+
+test("40 open/close debu di AWAL bar, bar seluruhnya debu (fallback), dan kolom export", () => {
+  // (a) trade debu PERTAMA di bar: open harus melompat ke trade nyata pertama
+  const a = api.buildBars([
+    T(24, 5, "dust0", "buy", 0.00001, 95),      // debu 0 SOL di awal bar
+    T(24, 600, "a", "buy", 4, 104), T(24, 3000, "c", "buy", 5, 105),
+  ], B + 25 * H + 60);
+  const ba = a.find(x => x.start === B + 24 * H);
+  near(ba.open, 104, 1e-9, "open debu diabaikan");
+  near(ba.openRaw, 95, 1e-9, "openRaw menyimpan harga debu");
+  near(ba.priceChgPct, (105 / 104 - 1) * 100, 1e-9, "chg sesuai open/close nyata");
+  // (b) bar SELURUHNYA debu -> fallback ke semua trade (tidak boleh tanpa harga)
+  const b2 = api.buildBars([
+    T(25, 100, "d1", "buy", 0.0001, 50), T(25, 2000, "d2", "sell", 0.0001, 51),
+  ], B + 26 * H + 60).find(x => x.start === B + 25 * H);
+  near(b2.open, 50, 1e-9, "fallback open");
+  near(b2.close, 51, 1e-9, "fallback close");
+  near(b2.priceChgPct, 2, 1e-9, "fallback chg tetap terhitung");
+  eq(b2.dustTx, 2, "fallback tidak menghilangkan jejak debu");
+  // (c) kolom forensik ikut di header BARS
+  const header = SRC.split("\n").find(l => l.indexOf("\"bar_wib,cluster,") >= 0);
+  ok(header && header.indexOf("open_raw,close_raw") >= 0,
+     "BARS memuat open_raw,close_raw (tepat sebelum partial)");
+  ok(SRC.indexOf("FORENSIK WICK & OPEN/CLOSE") >= 0,
+     "catatan export menjelaskan aturan open/close v9.2.19");
+});
+
 
 // ── Jalankan & laporkan ─────────────────────────────────────────────────────
 (async () => {
@@ -674,6 +735,6 @@ test("38 tanpa R besar tidak ada level: |R| <50 atau lonjakan <10x -> nol sinyal
     else console.log("  GAGAL  " + name + "\n         -> " + err);
   }
   console.log("");
-  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (21 warisan + ${results.length - 21} baru: 11 fetch walk + 4 level instan).`);
+  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (21 warisan + 11 fetch walk + 4 level instan + 2 open/close debu).`);
   else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }
 })();

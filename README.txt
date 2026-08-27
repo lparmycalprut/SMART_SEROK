@@ -1,8 +1,24 @@
-SMART SEROK v9.2.18 — LEVEL ENGINE
+SMART SEROK v9.2.19 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
+
+PERUBAHAN (v9.2.19)
+-------------------
+OPEN/CLOSE DIBERSIHKAN DARI TRADE DEBU
+Kasus nyata 27 Agustus jam 23:00 WIB: harga asli bar bergerak +3%
+(100,2 → 103,3), tapi R MONITOR menampilkan harga -0,04% — dan R meledak
+menjadi TEMBOK (225× acuan). Sumber masalahnya SATU trade debu (0,0000 SOL)
+di ujung bar di harga 100,16: ia menjadi "close" bar. OPEN/CLOSE dulu
+memakai SELURUH trade, padahal HIGH/LOW sudah disaring sejak v9.2.5.
+Perbaikan: open/close kini dihitung hanya dari trade ≥ HL_MIN_SOL
+(0,001 SOL) — fallback ke semua trade bila isi bar seluruhnya debu, supaya
+tidak ada bar tanpa harga. Versi mentah (openRaw/closeRaw) tetap disimpan
+dan diekspor sebagai kolom open_raw/close_raw di bagian BARS (dikosongkan
+bila sama dengan yang dipakai), mengikuti pola high_raw_mc/low_raw_mc.
+TIDAK ADA ambang sinyal yang diubah — ini murni membersihkan input
+chg_pct/R yang selama ini bisa dipalsukan oleh satu trade debu.
 
 PERUBAHAN BESAR (v9.2.17 — v9.2.18)
 -----------------------------------
@@ -112,8 +128,11 @@ Kasus nyata BABYSHIB, 20 Agustus 01:00 WIB:
   -> padahal harga nyata tertinggi bar itu $121,76K (0,53 SOL)
   -> garis resistance meleset 106%; retest jam 19:00 tidak terdeteksi
 
-Sekarang HIGH/LOW hanya dihitung dari trade >= 0,001 SOL. OPEN, CLOSE, CVD
-dan R tetap memakai SELURUH trade — hanya penentuan wick yang disaring.
+Sekarang HIGH/LOW hanya dihitung dari trade >= 0,001 SOL. OPEN dan CLOSE
+waktu itu tetap memakai SELURUH trade — hanya penentuan wick yang disaring.
+(DI PERBAIKI DI v9.2.19: open/close kini ikut disaring oleh aturan yang
+sama, karena trade debu di ujung bar ternyata bisa memalsukan chg_pct dan R;
+lihat bagian paling atas.) CVD dan R tetap memakai seluruh trade.
 Kalau semua trade dalam satu bar berukuran debu, bar itu memakai seluruh
 trade (fallback) agar tidak ada bar tanpa harga.
 
