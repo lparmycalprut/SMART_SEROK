@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.15
+ * SMART SEROK — v9.2.16
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -20,6 +20,12 @@
  * (concentration_ratio = max_trade_sol / vol_sol >= 0,6) ditandai RAPUH —
  * murni metadata/label, syarat kelulusan sinyal tidak berubah.
  * Mode LIVE memuat 4 hari data; R MONITOR menampilkan 24 jam terakhir.
+ *
+ * v9.2.16: fetch rentang N hari diperbaiki — dulu berhenti di ~1 hari karena
+ * API GMGN memotong `from` yang jauh di masa lalu + cache yang memangkas
+ * rentang. Sekarang walkTradeRange() menjalankan rentang penuh dalam
+ * rantai-rantai cursor yang dimundurkan bertahap, dengan log progress per
+ * halaman dan laporan jernih bila data API tidak menutup rentang yang diminta.
  */
 
 (function () {
@@ -44,7 +50,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.15";             // dipakai di header file export
+const EXT_VER = "9.2.16";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -572,7 +578,125 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
   function seedFromCache(cached) { let added = 0; for (const t of (cached.trades || [])) { if (!t || !t.ts) continue; const key = `${t.tx_hash}_${t.event}_${t.ts}_${t.maker}`; if (!capturedTrades.has(key)) { capturedTrades.set(key, t); added++; } } return added; }
   function getSortedTrades() { const a = Array.from(capturedTrades.values()); a.sort((x, y) => x.ts - y.ts); return a; }
 
-  // ── Background fetch (jeda adaptif dari v6.1) ──
+  // ── FETCH WALK (v9.2.16) ─────────────────────────────────────────────────
+  // Timestamp trade dalam detik; API kadang membalik milidetik — dinormalisasi.
+  function tradeTsOf(item) {
+    if (!item || typeof item !== "object") return 0;
+    let ts = parseInt(item.timestamp ?? item.time ?? item.ts ?? item.created_at ?? item.create_time ?? item.block_time ?? item.trade_time ?? 0);
+    if (!isFinite(ts) || ts <= 0) return 0;
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    return ts;
+  }
+
+  // Satu GET ke API GMGN dengan retry (diambil dari blok inline lama, dipisah
+  // supaya mekanismenya bisa dites tanpa browser). Return json bila code===0,
+  // null setelah semua percobaan gagal (TIDAK pernah menelan error diam-diam:
+  // tiap kegagalan tercatat di console).
+  async function gmgnRequest(url, delayMs) {
+    let lastErr = "";
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        if (attempt === 0) console.log("[SMART SEROK] GET", url);
+        const resp = await originalFetch.apply(window, [url, { credentials: "include" }]);
+        const txt = await resp.text();
+        let json = null;
+        try { json = JSON.parse(txt); } catch (pe) { json = null; }
+        if (json && json.code === 0) return json;
+        lastErr = json ? `code=${json.code} (${json.reason || json.msg || "?"})` : `HTTP ${resp.status}`;
+      } catch (e) {
+        lastErr = "ERR " + (e && e.message ? e.message : e);
+      }
+      if (attempt < 3) {
+        console.warn(`[SMART SEROK] retry ${attempt + 1}/3: ${lastErr}`);
+        await new Promise(r => setTimeout(r, (delayMs || 800) * (attempt + 2)));
+      }
+    }
+    console.error(`[SMART SEROK] request gagal setelah 4 percobaan: ${lastErr} | ${url}`);
+    return null;
+  }
+
+  /**
+   * Jalankan rentang [startTs, endTs] mundur dari endTs sampai tertutup penuh.
+   * Mekanisme inti fetch N hari (v9.2.16) — dipakai Background Fetch & LIVE.
+   *
+   * opts:
+   *   baseUrl     string — URL dasar token_trades (sudah memuat ?…&limit=200)
+   *   startTs     detik — batas terlama yang diminta (wajib > 0)
+   *   endTs       detik — batas terbaru (default now+60)
+   *   request     fn(url) -> Promise<json|null> — satu halaman; null = gagal
+   *   onProgress  fn({page, history, oldest, total, coveredTo, chainRestarts, url})
+   *   shouldStop  fn() -> bool — misal user klik STOP / LIVE dimatikan
+   *   maxChainPages / maxPages / stepSec — override nilai pengaman
+   *
+   * Return { pages, total, oldest, covered, rangeWalked, capped, failed,
+   *          stopped, chainRestarts, startTs, endTs }
+   *   covered     : trade terlama sudah <= startTs (data menjangkau awal rentang)
+   *   rangeWalked : seluruh rentang sudah dijelajahi — termasuk kasus API
+   *                 tidak punya data selama (caller yang melapor "X dari Y hari")
+   */
+  async function walkTradeRange(opts) {
+    const startTs = opts.startTs > 0 ? opts.startTs : 0;
+    const endTs = opts.endTs > 0 ? opts.endTs : Math.floor(Date.now() / 1000) + 60;
+    const maxChainPages = Math.max(1, opts.maxChainPages || FETCH_CHAIN_PAGES);
+    const maxPages = Math.max(1, opts.maxPages || FETCH_MAX_PAGES);
+    const stepSec = opts.stepSec || WALK_PROBE_STEP_SEC;
+
+    let coveredTo = endTs;   // boundary rantai sekarang: hanya ambil trade <= coveredTo
+    let cursor = null;       // SELALU diupdate dari respons sebelumnya
+    let chainPages = 0, chainRestarts = 0, chainMin = Infinity;
+    let pages = 0, total = 0, oldest = Infinity;
+    let failed = false, capped = false, stopped = false;
+
+    const restart = (toTs) => {
+      cursor = null; chainPages = 0; chainMin = Infinity;
+      coveredTo = Math.max(startTs, toTs);
+      chainRestarts++;
+    };
+
+    while (coveredTo > startTs) {
+      if (opts.shouldStop && opts.shouldStop()) { stopped = true; break; }
+      if (pages >= maxPages) { capped = true; break; }
+
+      // ── satu halaman (satu request; cursor dari respons sebelumnya) ──
+      let url = `${opts.baseUrl}&from=${startTs}&to=${coveredTo}`;
+      if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+      const json = await opts.request(url);
+      if (!json) { failed = true; break; }
+
+      pages++; chainPages++;
+      const data = (json && typeof json.data === "object") ? json.data : {};
+      const history = Array.isArray(data.history) ? data.history
+        : Array.isArray(json) ? json : [];
+      for (const item of history) {
+        const ts = tradeTsOf(item);
+        if (ts > 0) { total++; if (ts < chainMin) chainMin = ts; if (ts < oldest) oldest = ts; }
+      }
+      if (opts.onProgress) {
+        try { opts.onProgress({ page: pages, history, oldest, total, coveredTo, startTs, endTs, chainRestarts, url }); } catch (e) {}
+      }
+
+      // ── keputusan langkah berikutnya ──
+      if (oldest <= startTs) break;                                  // (1) rentang tertutup data
+      const next = data.next || null;
+      const advance = !!next && next !== cursor;
+      if (advance) {                                                 // (2) lanjut rantai
+        cursor = next;
+        if (chainPages >= maxChainPages) restart(chainMin - 1);      //     batas halaman rantai tercapai
+        continue;
+      }
+      if (chainMin < Infinity) restart(chainMin - 1);                // (3) rantai habis dgn data: rantai baru, lebih tua
+      else restart(coveredTo - stepSec);                             // (4) potongan kosong (gap/habis): mundur bertahap
+    }
+
+    return {
+      pages, total, oldest,
+      covered: oldest <= startTs,
+      rangeWalked: coveredTo <= startTs,
+      capped, failed, stopped, chainRestarts, startTs, endTs,
+    };
+  }
+
+  // ── Background fetch (v9.2.16: walk bertahap, rentang penuh) ──
   async function backgroundFetch() {
     const mint = getMintFromUrl();
     if (!mint || mint === "GMGN") { alert("Token mint tidak terdeteksi di URL."); return; }
@@ -582,40 +706,77 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
     const btn = document.getElementById("gmgn-btn-bgfetch"), st = document.getElementById("gmgn-status-text");
     if (btn) { btn.className = "gmgn-btn-main gmgn-btn-stop"; btn.innerHTML = `<span>⏹ STOP Fetch</span>`; }
     const delay = getCooldownMs(); let { startTs, endTs } = getBoundaryForFetch();
+    // v9.2.16: cache di-SEED saja (UI langsung terisi, dedup tx_hash menampung
+    // overlap). DULU di sini startTs diganti lastCachedTs+1 — "fetch 7 hari"
+    // dengan cache 1 hari jadi hanya mengambil trade setelah trade terakhir
+    // cache, dan sisa 6 hari tidak pernah ke-fetch. Rentang yang diminta
+    // sekarang SELALU dijalankan penuh.
     const cached = await loadCache(mint);
-    if (cached) { const seeded = seedFromCache(cached); let lastCachedTs = 0; for (const t of cached.trades) if (t.ts > lastCachedTs) lastCachedTs = t.ts; if (lastCachedTs > 0) { startTs = Math.max(startTs, lastCachedTs + 1); } }
+    if (cached) seedFromCache(cached);
+
+    const now = Math.floor(Date.now() / 1000);
+    if (endTs <= 0) endTs = now + 60;
+    const usedDefault = !(startTs > 0);
+    if (usedDefault) startTs = endTs - DEFAULT_RANGE_DAYS * 86400;
+    const totalDays = Math.max(1, Math.ceil((endTs - startTs) / 86400));
+
     const base = `https://gmgn.ai/vas/api/v1/token_trades/sol/${mint}?event=buy&event=sell&limit=200`;
-    console.log("[SMART SEROK] backgroundFetch start, mint=", mint);
-    if (st) { st.innerText = `FETCH mint ${mint.slice(0, 8)}…`; st.style.color = "#38bdf8"; }
-    let cursor = null, page = 0; const maxPages = 1000;
-    while (bgFetchActive && page < maxPages) {
-      let url = base; if (startTs > 0) url += `&from=${startTs}`; if (endTs > 0) url += `&to=${endTs}`; if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-      let json = null, ok = false, attemptsUsed = 0, lastErr = "";
-      for (let attempt = 0; attempt < 4 && !ok; attempt++) {
-        attemptsUsed = attempt;
-        try {
-          console.log("[SMART SEROK] GET", url);
-          const resp = await originalFetch.apply(window, [url, { credentials: "include" }]);
-          const txt = await resp.text();
-          try { json = JSON.parse(txt); } catch (pe) { json = null; lastErr = `HTTP ${resp.status} — respon bukan JSON (kemungkinan Cloudflare challenge)`; }
-          if (json && json.code === 0) ok = true;
-          else { lastErr = json ? `code=${json.code} (${json.reason || json.msg || "?"})` : (lastErr || `HTTP ${resp.status}`); if (attempt < 3) await new Promise(r => setTimeout(r, delay * (attempt + 2))); }
-        } catch (e) { lastErr = "ERR " + (e && e.message ? e.message : e); console.error("[SMART SEROK] fetch err", e); if (attempt < 3) await new Promise(r => setTimeout(r, delay * (attempt + 2))); }
+    console.log(`[SMART SEROK] backgroundFetch: ${totalDays} hari${usedDefault ? " (default — tanpa filter GMGN)" : ""} · ${wibIso(startTs)} -> ${wibIso(endTs)} · mint=${mint}`);
+    if (st) { st.innerText = `FETCH ${totalDays} hari · mulai…`; st.style.color = "#38bdf8"; }
+
+    const fmtD = d => (Math.round(d * 10) / 10).toString().replace(".", ",");
+    const r = await walkTradeRange({
+      baseUrl: base, startTs, endTs,
+      maxChainPages: FETCH_CHAIN_PAGES, maxPages: FETCH_MAX_PAGES,
+      request: (url) => gmgnRequest(url, delay),
+      shouldStop: () => !bgFetchActive,
+      onProgress: (info) => {
+        // "hari ke-X dari Y": sudah mundur sejauh X hari ke belakang.
+        const dayIdx = info.oldest === Infinity ? 0 : Math.min(totalDays, Math.max(1, Math.ceil((endTs - info.oldest) / 86400)));
+        const where = dayIdx ? `hari ${dayIdx}/${totalDays}` : `s/d ${wibDateOf(endTs)}`;
+        if (st) { st.innerText = `FETCH ${where} · ${capturedTrades.size} TX`; st.style.color = "#38bdf8"; }
+        console.log(`[SMART SEROK] fetch ${totalDays} hari: halaman ${info.page} · +${info.history.length} trade · tersimpan ${capturedTrades.size} TX · terlama ${info.oldest === Infinity ? "—" : wibIso(info.oldest)}${info.chainRestarts ? ` · rantai baru #${info.chainRestarts}` : ""}`);
+        updateUI();
       }
-      if (!ok || !json) { if (st) { st.innerText = `❌ Gagal hal ${page}: ${lastErr}`; st.style.color = "#ef4444"; } console.error("[SMART SEROK] abort:", lastErr, "|", url); break; }
-      const d = json.data || {}, history = d.history || [], nxt = d.next;
-      if (history.length) processHistoryItems(history);
-      page++;
-      if (st) { st.innerText = `FETCH hal ${page} · ${capturedTrades.size} TX`; st.style.color = "#10b981"; }
-      updateUI();
-      if (!nxt) { bgFetchComplete = true; break; }
-      cursor = nxt;
-      if (attemptsUsed > 0) await new Promise(r => setTimeout(r, delay));   // jeda adaptif
-    }
+    });
+
     bgFetchActive = false;
     if (btn) { btn.className = "gmgn-btn-main gmgn-btn-start"; btn.innerHTML = `<span>🌐 Background Fetch</span>`; }
-    if (bgFetchComplete) saveCache(mint, getSortedTrades());
-    if (st) { st.innerText = bgFetchComplete ? `✅ DONE (${capturedTrades.size} TX)` : `⏸ ${capturedTrades.size} TX`; st.style.color = bgFetchComplete ? "#10b981" : "#f59e0b"; }
+    const size = capturedTrades.size;
+    const gotDays = r.oldest !== Infinity ? Math.max(0, (endTs - r.oldest) / 86400) : 0;
+    if (r.failed) {
+      if (st) { st.innerText = `❌ Gagal di halaman ${r.pages} — detail di console`; st.style.color = "#ef4444"; }
+      console.error(`[SMART SEROK] fetch berhenti: error setelah ${r.pages} halaman (${size} TX tersimpan).`);
+    } else if (r.stopped) {
+      if (st) { st.innerText = `⏸ STOP (${size} TX)`; st.style.color = "#f59e0b"; }
+    } else if (r.capped) {
+      if (st) { st.innerText = `⚠ Batas ${FETCH_MAX_PAGES} halaman — ${fmtD(gotDays)}/${totalDays} hari`; st.style.color = "#f59e0b"; }
+      console.warn(`[SMART SEROK] fetch berhenti di batas ${FETCH_MAX_PAGES} halaman: ${fmtD(gotDays)} dari ${totalDays} hari (${size} TX). Perkecil rentang lalu ulangi — cache mempercepat.`);
+    } else {
+      // Selesai tanpa error: walk menjelajahi SELURUH rentang yang diminta,
+      // jadi bgFetchComplete = kita sudah punya semua yang bisa diambil.
+      bgFetchComplete = true;
+      try { saveCache(mint, getSortedTrades()); } catch (e) {}
+      const deficitDays = totalDays - gotDays;
+      if (r.covered || deficitDays <= 1) {
+        // Rentang tertutup data, atau trade terlama hanya sedikit di dalam
+        // awal rentang (rentang mulai di antara dua trade) — selesai normal.
+        if (st) {
+          st.innerText = r.covered
+            ? `✅ DONE ${totalDays}/${totalDays} hari · ${size} TX`
+            : `✅ DONE · data terlama ${wibDateOf(r.oldest)} · ${size} TX`;
+          st.style.color = "#10b981";
+        }
+        console.log(`[SMART SEROK] fetch selesai: ${r.covered ? totalDays + "/" + totalDays + " hari penuh" : "rentang dijelajahi penuh (data terlama " + wibIso(r.oldest) + ")"} · ${size} TX · ${r.pages} halaman · ${r.chainRestarts} rantai baru.`);
+      } else {
+        // Rentang sudah dijelajahi SEMUA tapi data API tidak menutupnya
+        // (token baru listing / limit provider). Laporkan JERNIH berapa hari
+        // yang benar-benar didapat vs diminta — jangan berhenti diam-diam.
+        if (st) { st.innerText = `⚠ ${fmtD(gotDays)}/${totalDays} hari · data terlama ${wibDateOf(r.oldest)}`; st.style.color = "#f59e0b"; }
+        console.warn(`[SMART SEROK] rentang TIDAK tertutup data: diminta ${fmtD((endTs - startTs) / 86400)} hari (mulai ${wibIso(startTs)}), data API terlama ${wibIso(r.oldest)} — ${fmtD(gotDays)} hari yang tersimpan (${size} TX). Kemungkinan token baru listing atau limit provider. Fetch tetap mengambil SEMUA yang tersedia.`);
+        alert(`SMART SEROK: hanya ${fmtD(gotDays)} dari ${totalDays} hari yang tersedia di API (data terlama ${fmtTs(r.oldest)} WIB). Sisanya tidak ada di sumber data — semua yang tersedia sudah diambil.`);
+      }
+    }
     updateUI();
   }
   function stopBackgroundFetch() { bgFetchActive = false; const btn = document.getElementById("gmgn-btn-bgfetch"); if (btn) { btn.className = "gmgn-btn-main gmgn-btn-start"; btn.innerHTML = `<span>🌐 Background Fetch</span>`; } const st = document.getElementById("gmgn-status-text"); if (st) { st.innerText = `PAUSED (${capturedTrades.size} TX)`; st.style.color = "#f59e0b"; } }
@@ -644,6 +805,31 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
   // tetap inkremental (dari trade terakhir). Tampilan R MONITOR TIDAK ikut
   // melebar: tetap 24 jam terakhir (R_MON_WINDOW_SEC).
   const LIVE_FETCH_SEC = 4 * 24 * 3600;
+  // ── FETCH WALK (v9.2.16) ──
+  // Bug v9.2.15: fetch rentang N hari berhenti di ~1 hari. Akar masalah:
+  // (1) API GMGN memotong `from` yang jauh di masa lalu — request
+  //     `from=7 hari lalu&to=now` cuma mengembalikan ~1 hari terakhir
+  //     (fakta yang sudah tercatat di komentar LIVE: "from jauh di belakang
+  //     sering dipotong API"), dan backgroundFetch lama mengirim SATU
+  //     from/to lalu percaya satu rantai cursor: rantai habis di ~1 hari,
+  //     `next` null, kode menganggap selesai.
+  // (2) cache incremental mengganti startTs dengan lastCachedTs+1, sehingga
+  //     "fetch 7 hari" dengan cache 1 hari hanya mengambil trade setelah
+  //     trade terakhir cache — sisa rentang tidak pernah di-fetch.
+  // Perbaikan: walkTradeRange() menjalankan rentang dalam rantai-rantai
+  // cursor yang dimundurkan bertahap:
+  //   • rantai baru SELALU dimulai dari to = <titik terlama yang sudah
+  //     dicapai> - 1 — tidak ada request berulang di titik yang sama,
+  //   • cursor selalu diupdate dari respons sebelumnya,
+  //   • rantai yang terpotong (batas halaman / `next` habis di tengah)
+  //     langsung diganti rantai baru — tidak ada break prematur,
+  //   • potongan kosong (data hening / gap) mundur WALK_PROBE_STEP_SEC —
+  //     langkah ini JAH < jendela tersirat API (~1 hari) supaya potongan
+  //     saling tumpang-tindih dan tidak ada trade yang terlewat.
+  const FETCH_CHAIN_PAGES = 200;         // batas halaman per rantai cursor (200 x 200 tx = 40k tx)
+  const FETCH_MAX_PAGES = 1000;          // pengaman global lintas semua rantai
+  const WALK_PROBE_STEP_SEC = 12 * 3600; // mundur boundary saat potongan kosong (wajib < ~1 hari)
+  const DEFAULT_RANGE_DAYS = 7;          // rentang saat user belum set filter di halaman GMGN
   function maxTradeTs() { let m = 0; for (const t of capturedTrades.values()) if (t.ts > m) m = t.ts; return m; }
   function paintLiveBtn() {
     const btn = document.getElementById("gmgn-btn-live");
@@ -694,57 +880,39 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
     if (st) { st.innerText = fullWindow ? "LIVE · muat 4 hari…" : "LIVE · sync baru…"; st.style.color = "#38bdf8"; }
     const delay = getCooldownMs();
     const base = `https://gmgn.ai/vas/api/v1/token_trades/sol/${mint}?event=buy&event=sell&limit=200`;
-    let added = 0;
-    async function pullPages(fromSec, toSec, maxPages) {
-      let cursor = null, page = 0, oldest = Infinity;
-      while (liveMode && page < maxPages) {
-        let url = base;
-        if (fromSec > 0) url += `&from=${fromSec}`;
-        if (toSec > 0) url += `&to=${toSec}`;
-        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-        let json = null, ok = false;
-        for (let attempt = 0; attempt < 3 && !ok; attempt++) {
-          try {
-            const resp = await originalFetch.apply(window, [url, { credentials: "include" }]);
-            const txt = await resp.text();
-            try { json = JSON.parse(txt); } catch (e) { json = null; }
-            if (json && json.code === 0) ok = true;
-            else if (attempt < 2) await new Promise(r => setTimeout(r, delay * (attempt + 2)));
-          } catch (e) {
-            if (attempt < 2) await new Promise(r => setTimeout(r, delay * (attempt + 2)));
-          }
-        }
-        if (!ok || !json) break;
-        const history = (json.data || {}).history || [];
-        if (history.length) added += processHistoryItems(history);
-        page++;
-        for (const item of history) {
-          let ts = parseInt(item.timestamp ?? item.time ?? item.ts ?? item.block_time ?? 0);
-          if (ts > 1e12) ts = Math.floor(ts / 1000);
-          if (ts > 0 && ts < oldest) oldest = ts;
-        }
-        if (oldest < windowStart) break;
-        if (!(json.data && json.data.next)) break;
-        cursor = json.data.next;
+    // from/to detik (sama seperti Background Fetch). Jangan milidetik — API GMGN menolak, LIVE 0 TX.
+    // v9.2.16: walk bertahap (walkTradeRange) — mekanisme yang sama dengan
+    // Background Fetch, karena API GMGN memotong `from` yang jauh di masa
+    // lalu. Versi lama (dua pullPages 200+80 halaman) bisa berhenti sebelum
+    // jendela 4 hari tertutup untuk token dengan banyak trade.
+    const sizeBefore = capturedTrades.size;
+    const r = await walkTradeRange({
+      baseUrl: base, startTs, endTs,
+      maxChainPages: FETCH_CHAIN_PAGES,
+      maxPages: fullWindow ? 400 : 100,
+      request: (url) => gmgnRequest(url, delay),
+      shouldStop: () => !liveMode,
+      onProgress: (info) => {
+        processHistoryItems(info.history);
+        if (st) { st.innerText = `LIVE · ${capturedTrades.size} TX · terlama ${info.oldest === Infinity ? "—" : wibDateOf(info.oldest)}`; st.style.color = "#38bdf8"; }
+        console.log(`[SMART SEROK] LIVE: halaman ${info.page} · +${info.history.length} trade · tersimpan ${capturedTrades.size} TX${info.chainRestarts ? ` · rantai baru #${info.chainRestarts}` : ""}`);
+        updateUI();
       }
-      return oldest;
-    }
+    });
     try {
-      // from/to detik (sama seperti Background Fetch). Jangan milidetik — API GMGN menolak, LIVE 0 TX.
-      // full window: tanpa from, mundur dari now sampai 4 hari (from jauh di belakang sering dipotong API).
-      if (fullWindow) {
-        const oldest = await pullPages(0, endTs, 200);
-        if (liveMode && oldest > windowStart) await pullPages(windowStart, Math.max(windowStart + 1, oldest - 1), 80);
-      } else {
-        await pullPages(startTs, endTs, 80);
+      const added = capturedTrades.size - sizeBefore;
+      if (liveMode) {
+        liveNextAt = Date.now() + LIVE_EVERY_MS;
+        if (st) {
+          const nxt = new Date(liveNextAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
+          st.innerText = r.failed ? `LIVE ❌ gagal · +${added} TX · next ${nxt}` : `LIVE · +${added} TX · next ${nxt}`;
+          st.style.color = r.failed ? "#ef4444" : "#10b981";
+        }
+        if (!r.covered && r.rangeWalked && r.oldest !== Infinity) {
+          console.warn(`[SMART SEROK] LIVE: data API hanya sampai ${wibIso(r.oldest)} — jendela ${LIVE_FETCH_SEC / 86400} hari tidak tertutup penuh (token baru listing?).`);
+        }
+        try { saveCache(mint, getSortedTrades()); } catch (e) {}
       }
-      liveNextAt = Date.now() + LIVE_EVERY_MS;
-      if (st) {
-        const nxt = new Date(liveNextAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-        st.innerText = `LIVE · +${added} TX · next ${nxt}`;
-        st.style.color = "#10b981";
-      }
-      try { saveCache(mint, getSortedTrades()); } catch (e) {}
     } finally {
       bypassRangeFilter = false;
       liveBusy = false;
@@ -2363,7 +2531,7 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.15</span>
+        <span class="t">🥄 SMART SEROK v9.2.16</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2461,11 +2629,14 @@ const EXT_VER = "9.2.15";             // dipakai di header file export
       isAbsorbGrade, isBlazeGrade, readR, rBaseline, rMonWindowBars,
       signalTitle, buildNarrative, levelLine, touchesLine,
       wallColor, wallTextColor, wallGlow,
+      // fetch walk (v9.2.16) — inti fetch N hari, dites dengan fake API
+      walkTradeRange, tradeTsOf,
       // konstanta yang dijaga regresinya
       R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD, LVL_CONFIRM_BARS, LVL_R_DROP,
       LVL_MIN_MOVE_PCT, LVL_FAIL_PCT, LVL_RETEST_R_MAX, R_BAND_FREE,
       R_BAND_ABSORB, R_BAND_WALL, R_BAND_BLAZE, HL_MIN_SOL,
-      CONCENTRATION_FRAGILE_THRESHOLD, R_MON_WINDOW_SEC, LIVE_FETCH_SEC
+      CONCENTRATION_FRAGILE_THRESHOLD, R_MON_WINDOW_SEC, LIVE_FETCH_SEC,
+      FETCH_CHAIN_PAGES, FETCH_MAX_PAGES, WALK_PROBE_STEP_SEC, DEFAULT_RANGE_DAYS
     });
   }
 

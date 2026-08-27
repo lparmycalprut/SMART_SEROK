@@ -9,7 +9,7 @@
  * (v9.2.12), tetapi file suite-nya belum pernah ikut ter-commit ke repo
  * (riwayat git ter-squash). Suite lama DIREKONSTRUKSI di sini dari deskripsi
  * README v9.2.11/v9.2.12 supaya bisa terus dijalankan, lalu ditambah tes baru
- * v9.2.15. Total: 23 tes = 17 lama + 6 baru.
+ * v9.2.15 (6) dan v9.2.16 (11 — fetch walk). Total: 34 tes.
  *
  * content.js adalah content script browser (IIFE, tanpa export). Suite ini
  * menjalankan file itu di sandbox Node; content.js memanggil hook
@@ -134,11 +134,19 @@ function scenarioTrades({ whale = true, baseR = 1.5 } = {}) {
 
 // ── Runner mini ─────────────────────────────────────────────────────────────
 const results = [];
+const queued = [];
 let api = null;
-function test(name, fn) {
-  try { fn(); results.push([true, name, ""]); }
-  catch (e) { results.push([false, name, String(e && e.message || e)]); }
+function test(name, fn) { queued.push([name, fn]); }
+async function runTests() {
+  for (const [name, fn] of queued) {
+    try { await fn(); results.push([true, name, ""]); }
+    catch (e) { results.push([false, name, String(e && e.message || e)]); }
+  }
 }
+// Pengaman: tes walk yang bug (loop tak berhingga) tidak menggantung suite.
+const withTimeout = (p, ms, msg) => Promise.race([
+  p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg || "timeout " + ms + " ms — walk tidak selesai?")), ms)),
+]);
 function ok(cond, msg) { if (!cond) throw new Error(msg || "assert gagal"); }
 function eq(a, b, msg) { if (a !== b) throw new Error((msg || "eq") + ": " + JSON.stringify(a) + " !== " + JSON.stringify(b)); }
 function near(a, b, tol, msg) { if (!(Math.abs(a - b) <= tol)) throw new Error((msg || "near") + ": " + a + " vs " + b); }
@@ -399,12 +407,196 @@ test("23 konstanta v9.2.15: ambang rapuh 0.6, LIVE 4 hari, R MONITOR 24 jam; thr
   eq(api.HL_MIN_SOL, 0.001);
 });
 
-// ── Laporkan ────────────────────────────────────────────────────────────────
-let pass = 0;
-for (const [good, name, err] of results) {
-  if (good) { pass++; console.log("  LULUS  " + name); }
-  else console.log("  GAGAL  " + name + "\n         -> " + err);
+// ══ REGRESI BARU — v9.2.16 fetch walk / walkTradeRange (11 tes) ═════════════
+// Fake API GMGN dengan perilaku persis seperti yang dilaporkan: request hanya
+// mengembalikan trade di jendela [max(from, to - W), to] (W ~1 hari) — `from`
+// yang lebih tua dari W di depan `to` TIDAK dipakai (dipotong). Ini perilaku
+// yang membuat fetch lama berhenti di 1 hari; tes 24 mereproduksi bug itu
+// dengan logika v9.2.15, tes 25+ membuktikan walk memperbaikinya.
+const NOW_WALK = 1787795132;   // epoch tetap agar tes deterministik
+const WALK_BASE = "https://gmgn.ai/vas/api/v1/token_trades/sol/TEST?event=buy&event=sell&limit=200";
+function makeFakeGmgnApi({ days, perDay, gaps = [], windowDays = 1, pageLimit = 200 }) {
+  const D = 86400;
+  const trades = [];
+  let id = 0;
+  for (let d = days; d >= 1; d--) {               // d = d hari lalu: [now-d*D, now-(d-1)*D)
+    const dayStart = NOW_WALK - d * D;
+    for (let k = 0; k < perDay; k++) {
+      const ts = dayStart + Math.floor((k + 0.5) * D / perDay);
+      if (gaps.some(g => ts >= g[0] && ts < g[1])) continue;
+      trades.push({ ts, tx_hash: "w" + (++id), event: k % 2 ? "buy" : "sell", maker: "m" + (id % 5), timestamp: ts });
+    }
+  }
+  trades.sort((a, b) => b.ts - a.ts);              // terbaru dulu, seperti API
+  const request = (url) => {
+    const u = new URL(url, "https://gmgn.ai");
+    const from = parseInt(u.searchParams.get("from") || "0", 10);
+    const to = parseInt(u.searchParams.get("to") || "0", 10);
+    const cursor = u.searchParams.get("cursor");
+    const offset = cursor ? parseInt(cursor.slice(1), 10) : 0;
+    const lo = Math.max(from, to - windowDays * D); // <- PEMOTONGAN: from > W diabaikan
+    const filtered = trades.filter(t => t.ts <= to && t.ts >= lo);
+    const slice = filtered.slice(offset, offset + pageLimit);
+    const next = offset + pageLimit < filtered.length ? "o" + (offset + pageLimit) : null;
+    return Promise.resolve({ code: 0, data: { history: slice, next } });
+  };
+  const inRange = (s, e) => trades.filter(t => t.ts >= s && t.ts <= e);
+  return { request, trades, inRange };
 }
-console.log("");
-if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (17 lama + ${results.length - 17} baru).`);
-else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }
+const doWalk = (fake, startTs, endTs, extra) => withTimeout(
+  api.walkTradeRange(Object.assign({ baseUrl: WALK_BASE, startTs, endTs, request: fake.request }, extra || {})),
+  15000);
+
+test("24 REPRODUKSI BUG LAMA: satu rantai from=7hari lalu&to=now berhenti di ~1 hari", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  // Persis logika backgroundFetch v9.2.15: satu URL from/to, ikut cursor sampai null.
+  let cursor = null, page = 0, total = 0;
+  while (page < 1000) {
+    const json = await fake.request(`${WALK_BASE}&from=${startTs}&to=${endTs}` + (cursor ? `&cursor=${cursor}` : ""));
+    total += json.data.history.length;
+    page++;
+    if (!json.data.next) break;
+    cursor = json.data.next;
+  }
+  eq(total, 500, "logika lama hanya dapat 1 hari (500 tx) dari 3500 — bug ter-reproduksi");
+});
+
+test("25 walk: 7 hari token RAMAI (500 tx/hari) tertutup penuh — semua 3500 tx", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const got = new Set();
+  const r = await doWalk(fake, startTs, endTs, {
+    onProgress: (i) => i.history.forEach(t => got.add(t.tx_hash)),
+  });
+  const expect = fake.inRange(startTs, endTs);
+  eq(r.total, expect.length, "jumlah trade = semua trade di rentang");
+  eq(got.size, expect.length, "setiap trade di rentang terkumpul persis sekali");
+  ok(r.rangeWalked, "seluruh rentang dijelajahi");
+  ok(r.oldest >= startTs && r.oldest <= endTs, "trade terlama sesuai rentang yang diminta");
+  ok(r.pages >= 21, "multi-rantai: 500/200 = 3 halaman/hari x 7 (logika lama: 3 lalu berhenti)");
+  ok(r.chainRestarts >= 6, "rantai cursor dibuka ulang tiap ~1 hari");
+  ok(!r.capped && !r.failed && !r.stopped, "tanpa error");
+});
+
+test("26 walk: 3 hari token SEPI (2 tx/hari) tertutup penuh", async () => {
+  const fake = makeFakeGmgnApi({ days: 3, perDay: 2 });
+  const startTs = NOW_WALK - 3 * 86400, endTs = NOW_WALK;
+  const got = new Set();
+  const r = await doWalk(fake, startTs, endTs, {
+    onProgress: (i) => i.history.forEach(t => got.add(t.tx_hash)),
+  });
+  const expect = fake.inRange(startTs, endTs);
+  eq(r.total, expect.length, "6 trade terkumpul");
+  eq(got.size, expect.length, "setiap trade terkumpul persis sekali");
+  ok(r.rangeWalked, "rentang dijelajahi sampai awal");
+  ok(!r.capped && !r.failed, "tanpa error");
+});
+
+test("27 walk: GAP data 2 hari di tengah dilewati dengan step mundur, data dua sisi terkumpul", async () => {
+  const gap = [NOW_WALK - 4 * 86400, NOW_WALK - 2 * 86400];   // hari ke-3 s/d ke-4 hening
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500, gaps: [gap] });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const got = new Set();
+  const r = await doWalk(fake, startTs, endTs, {
+    onProgress: (i) => i.history.forEach(t => got.add(t.tx_hash)),
+  });
+  const expect = fake.inRange(startTs, endTs);
+  eq(r.total, expect.length, "semua trade di luar gap terkumpul");
+  eq(got.size, expect.length, "tidak ada trade hilang / ganda");
+  ok(r.rangeWalked, "gap 2 hari tidak menghentikan walk");
+});
+
+test("28 walk: token baru listing (2 hari data), diminta 7 hari -> SEMUA yang ada diambil + laporan parsial", async () => {
+  const fake = makeFakeGmgnApi({ days: 2, perDay: 100 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const r = await doWalk(fake, startTs, endTs);
+  eq(r.total, 200, "semua data yang tersedia (2 hari) diambil");
+  ok(!r.covered, "data tidak menjangkau awal rentang");
+  ok(r.rangeWalked, "rentang tetap dijelajahi penuh");
+  ok(r.oldest > startTs && r.oldest >= NOW_WALK - 2 * 86400, "oldest = trade terlama token (±2 hari lalu)");
+  const gotDays = (endTs - r.oldest) / 86400;
+  ok(gotDays >= 1.9 && gotDays < 2.01, "laporan 'X hari didapat' konsisten: " + gotDays.toFixed(2) + " hari");
+  ok(!r.capped && !r.failed, "berhenti karena data habis, bukan error");
+});
+
+test("29 walk: cursor API MACET (next berulang) tidak membuat loop tak berhingga", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const stuck = (url) => fake.request(url).then(j => ({ code: 0, data: { history: j.data.history, next: "o0" } }));
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const got = new Set();
+  const r = await doWalk({ request: stuck }, startTs, endTs, {
+    onProgress: (i) => i.history.forEach(t => got.add(t.tx_hash)),
+  });
+  ok(r.rangeWalked, "walk tetap menyelesaikan rentang (boundary yang maju, bukan cursor)");
+  eq(got.size, fake.inRange(startTs, endTs).length, "trade terkumpul lengkap tanpa duplikat");
+  ok(r.pages < 200, "jumlah halaman terikat (" + r.pages + ")");
+});
+
+test("30 walk: rantai terpotong batas 2 halaman di tengah hari -> rantai baru, data tetap lengkap", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const got = new Set();
+  const r = await doWalk(fake, startTs, endTs, {
+    maxChainPages: 2,   // rantai dipotong tiap 2 halaman (400 tx)
+    onProgress: (i) => i.history.forEach(t => got.add(t.tx_hash)),
+  });
+  const expect = fake.inRange(startTs, endTs);
+  eq(r.total, expect.length, "data lengkap walau rantai pendek");
+  eq(got.size, expect.length, "overlap antar rantai tidak menghasilkan duplikat");
+  ok(r.chainRestarts >= 9, "rantai dibuka ulang sering (" + r.chainRestarts + "x)");
+  ok(r.rangeWalked, "rentang tertutup");
+});
+
+test("31 walk: batas halaman global -> berhenti dengan flag capped (bukan diam-diam)", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  const r = await doWalk(fake, startTs, endTs, { maxPages: 10 });
+  ok(r.capped, "flag capped tersambung");
+  eq(r.pages, 10, "berhenti tepat di batas 10 halaman");
+  ok(r.total > 0 && r.total < 3500, "data yang sempat terkumpul tetap dihitung (" + r.total + ")");
+  ok(!r.covered && !r.rangeWalked, "rentang belum tertutup — caller wajib lapor parsial");
+});
+
+test("32 walk: shouldStop (user klik STOP / LIVE off) dihormati", async () => {
+  const fake = makeFakeGmgnApi({ days: 7, perDay: 500 });
+  const startTs = NOW_WALK - 7 * 86400, endTs = NOW_WALK;
+  let stopFlag = false;
+  const r = await doWalk(fake, startTs, endTs, {
+    shouldStop: () => stopFlag,
+    onProgress: (i) => { if (i.page >= 4) stopFlag = true; },
+  });
+  ok(r.stopped, "flag stopped tersambung");
+  eq(r.pages, 4, "berhenti setelah halaman 4");
+  ok(!r.capped && !r.failed, "bukan error/batas — berhenti karena diminta");
+});
+
+test("33 walk: request gagal (network) -> flag failed, tidak menelan error", async () => {
+  const r = await doWalk({ request: () => Promise.resolve(null) }, NOW_WALK - 86400, NOW_WALK);
+  ok(r.failed, "flag failed tersambung");
+  eq(r.pages, 0, "belum ada halaman sukses");
+  ok(!r.rangeWalked, "rentang TIDAK dianggap dijelajahi");
+});
+
+test("34 tradeTsOf: normalisasi detik/milidetik & input tidak valid", () => {
+  eq(api.tradeTsOf({ timestamp: 1787795132 }), 1787795132, "detik utuh");
+  eq(api.tradeTsOf({ timestamp: 1787795132000 }), 1787795132, "milidetik -> detik");
+  eq(api.tradeTsOf({ timestamp: "1787795132" }), 1787795132, "string angka");
+  eq(api.tradeTsOf({ time: 1787795132 }), 1787795132, "field alternatif");
+  eq(api.tradeTsOf({ block_time: 1787795132000 }), 1787795132, "block_time ms");
+  eq(api.tradeTsOf({}), 0, "tanpa field -> 0");
+  eq(api.tradeTsOf(null), 0, "null -> 0");
+});
+
+// ── Jalankan & laporkan ─────────────────────────────────────────────────────
+(async () => {
+  await runTests();
+  let pass = 0;
+  for (const [good, name, err] of results) {
+    if (good) { pass++; console.log("  LULUS  " + name); }
+    else console.log("  GAGAL  " + name + "\n         -> " + err);
+  }
+  console.log("");
+  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (23 lama + ${results.length - 23} baru).`);
+  else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }
+})();
