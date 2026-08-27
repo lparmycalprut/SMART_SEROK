@@ -151,3 +151,44 @@ label mengecil tak terbaca.
 Re-wire otomatis tiap render ulang (updateUI tiap 3 detik) lewat MutationObserver.
 Saat widget lebih lebar dari 1000px, chart tetap mengisi penuh dan tombol
 disembunyikan — perilaku lama tidak berubah di layar besar.
+
+---
+
+## 2026-08-27 — Penanda level RAPUH (whale tunggal), v9.2.15
+
+**Masalah:** backtest manual — level yang lahir dari absorpsi RAKSASA lebih
+sering TEMBUS saat di-retest, bukan bertahan. **Hipotesis:** R ekstrem yang
+terpusat di satu wallet tidak meninggalkan penjaga level setelah wallet itu
+selesai; hanya absorpsi terdistribusi yang menciptakan defense berlapis.
+
+**Keputusan:**
+
+- `concentration_ratio = max_trade_sol / vol_sol` dihitung per bar di
+  `buildBars()` (di titik yang sama dengan max_trade_sol) dan ikut ke export
+  BARS sebagai kolom baru.
+- `level.fragile` = penyerapan kelas RAKSASA (`isAbsorbGrade(bar, prev)` DAN
+  ≥ `R_BAND_BLAZE`× acuan klaster — dibungkus helper `isBlazeGrade()`)
+  DAN `concentration_ratio >= CONCENTRATION_FRAGILE_THRESHOLD` (0,6).
+- fragile = **metadata murni**: tag judul "(RAPUH — whale tunggal)", satu
+  kalimat di narasi level, penegas di narasi retest, aksen warna yang reuse
+  skema RAKSASA (seller `#ff3355` / buyer `#00ff5e`), dan kolom export.
+  **Tidak ada ambang deteksi level yang diubah** — R_MIN_ABS, R_SPIKE_MULT,
+  seluruh LVL_*, R_BAND_WALL, R_BAND_BLAZE tetap. Alasan: hipotesis ini belum
+  tervalidasi; sebagai metadata, salah tandai hanya mengubah label, sedangkan
+  kalau jadi filter dan hipotesisnya salah, sinyal hilang diam-diam.
+- `CONCENTRATION_FRAGILE_THRESHOLD = 0.6` adalah angka AWAL — kalibrasi
+  lanjutan dari kolom `concentration_ratio_at_formation` vs hasil retest di
+  CSV export.
+- LIVE: fetch awal 4 hari (`LIVE_FETCH_SEC`), R MONITOR hanya menampilkan
+  24 jam terakhir (`R_MON_WINDOW_SEC`); `rBaseline` TETAP dihitung dari
+  seluruh klaster aktif supaya r_ratio/r_state di layar == file export.
+- Suite regresi resmi di-commit: `tests/regression.js` — 23 tes (17 lama
+  direkonstruksi dari deskripsi README v9.2.11/v9.2.12 + 6 baru). content.js
+  memanggil hook `globalThis.__SMART_SEROK_TEST__` yang hanya aktif bila
+  simbol itu sudah berupa fungsi sebelum file dievaluasi (di browser: no-op).
+
+**Catatan versi:** v9.2.14 sudah terpakai oleh perubahan chart horizontal
+(2026-08-25, PR #5) — content.js/manifest/DECISIONS.md sudah menyebutnya,
+hanya changelog README yang belum. Supaya satu nomor versi = satu isi
+perubahan, fitur ini naik ke **v9.2.15** (bukan v9.2.14 seperti rencana
+awal), dan README di-backfill entri v9.2.14-nya.

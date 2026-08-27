@@ -1,4 +1,4 @@
-SMART SEROK v9.2.11 — LEVEL ENGINE
+SMART SEROK v9.2.15 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
@@ -425,3 +425,99 @@ PERBAIKAN
     konstanta, jadi jumlahnya langsung terbaca tanpa dihitung manual.
 
 Nilai tetap 12 — ini murni pemberian nama & label, bukan perubahan perilaku.
+
+
+================================================================
+CHART BISA DIGESER HORIZONTAL  (v9.2.14)
+================================================================
+(Catatan: perubahan ini sudah tercatat di DECISIONS.md 2026-08-25 dan PR #5,
+tetapi entri changelog README-nya terlewat — di-backfill singat di sini.)
+
+SVG chart (R MONITOR & lintasan harga/CVD) tidak lagi dipaksa menyempit ke
+lebar widget. Ia tetap pada lebar aslinya (min-width 1000px) dan dibungkus
+.gmgn-chart-wrap yang bisa di-scroll horizontal:
+  - drag dengan mouse / swipe native di layar sentuh,
+  - tombol ‹ › (muncul otomatis hanya saat ada ruang terpotong),
+  - scroll wheel / trackpad horizontal.
+Re-wire otomatis tiap render ulang (updateUI tiap 3 detik) lewat
+MutationObserver. Saat widget lebih lebar dari 1000px chart tetap mengisi
+penuh — perilaku lama tidak berubah di layar besar.
+
+
+================================================================
+PENANDA LEVEL RAPUH (WHALE TUNGGAL) — KONSENTRASI ORDER  (v9.2.15)
+================================================================
+MASALAH
+Backtest manual menemukan pola yang BERLAWANAN dengan asumsi mesin: level
+RESISTANCE/SUPPORT TERBENTUK yang lahir dari absorpsi RAKSASA (|R| sangat
+ekstrem, >= R_BAND_BLAZE / 12x acuan) justru lebih sering BREAKOUT/BREAKDOWN
+saat di-retest, bukan bertahan sebagai level kuat.
+
+HIPOTESIS
+R ekstrem sering berasal dari SATU wallet (order tunggal besar) yang menyerap
+habis dalam satu candle. Begitu wallet itu selesai, tidak ada "penjaga" lain
+di level itu — beda dengan absorpsi terdistribusi dari banyak trade
+independen yang menciptakan defense berlapis.
+
+PERBAIKAN — KONSENTRASI ORDER
+Di titik yang sama dengan perhitungan max_trade_sol per bar, kini juga
+dihitung:
+  concentration_ratio = max_trade_sol / vol_sol
+yaitu porsi volume bar yang datang dari wallet terbesar. Disimpan sebagai
+field per bar dan menjadi kolom baru di bagian BARS file export, tepat
+setelah max_trade_sol.
+
+PERBAIKAN — PENANDA RAPUH SAAT LEVEL LAHIR
+Saat sinyal RESISTANCE/SUPPORT TERBENTUK dihasilkan, objek level diberi flag:
+  level.fragile = penyerapan kelas RAKSASA (isAbsorbGrade DAN >= 12x acuan)
+                  DAN concentration_ratio >= CONCENTRATION_FRAGILE_THRESHOLD
+INI METADATA, BUKAN FILTER. R_MIN_ABS, R_SPIKE_MULT, LVL_CONFIRM_BARS,
+LVL_R_DROP, LVL_MIN_MOVE_PCT, LVL_FAIL_PCT, LVL_EXIT_PCT, LVL_RETEST_R_MAX,
+R_BAND_WALL, R_BAND_BLAZE — semua threshold deteksi level TETAP SAMA. Level
+tetap lahir, tetap tampil normal di daftar sinyal; yang bertambah hanya
+label dan informasi:
+  - judul sinyal  : "RESISTANCE TERBENTUK (RAPUH — whale tunggal)"
+  - narasi level  : ditambah satu kalimat — "Penyerapan ini didominasi satu
+                    wallet (X% dari volume bar) — level ini historisnya
+                    lebih sering tembus daripada bertahan saat di-retest."
+  - narasi retest : untuk level fragile, framing breakout/breakdown
+                    ditegaskan — "Level ini dari awal sudah ditandai RAPUH
+                    (whale tunggal), jadi probabilitas tembus di retest ini
+                    secara historis lebih tinggi dari retest level biasa."
+                    Tidak ada logika baru yang memicu retest.
+  - warna aksen   : reuse skema TEMBOK biasa vs RAKSASA yang sudah ada
+                    (seller #ff3355 / buyer #00ff5e untuk level rapuh) —
+                    tidak ada skema warna baru.
+  - panel status retest: level rapuh diberi label "RAPUH — whale tunggal".
+
+CONCENTRATION_FRAGILE_THRESHOLD = 0.6
+Ditaruh di kelompok konstanta yang sama dengan R_BAND_BLAZE. Angka 0,6
+adalah nilai AWAL dari backtest manual pertama — PERLU DIKALIBRASI LAGI
+setelah backtest dengan lebih banyak data (pakai kolom export di bawah).
+
+EXPORT
+Bagian LEVEL & SINYAL kini memuat kolom fragile (TRUE/FALSE) dan
+concentration_ratio_at_formation untuk tiap level; baris retest membawa
+flag level asalnya. STATUS RETEST juga menampilkan fragile per level.
+Dengan ini backtest lanjutan bisa menilai hipotesis whale-tunggal tanpa
+membuka raw trades lagi.
+
+MODE LIVE: FETCH AWAL 4 HARI, R MONITOR 24 JAM TERAKHIR
+Fetch awal LIVE naik dari 48 jam menjadi 4 HARI (LIVE_FETCH_SEC) supaya
+mesin level punya ruang pembuktian (12 bar sesudah penyerapan) untuk
+penyerapan yang terjadi 2-3 hari lalu. Sinkron tiap 15 menit tetap
+inkremental dari trade terakhir. Tampilan R MONITOR justru dipersempit:
+hanya 24 JAM TERAKHIR yang digambar (R_MON_WINDOW_SEC), pada TF berapa pun
+(1H -> 24 candle, 4H -> 6). Acuan median TETAP dihitung dari seluruh
+klaster aktif, supaya r_ratio/r_state yang tampil di layar identik dengan
+file export.
+
+REGRESI
+Suite tes lama (9 tes era v9.2.11 + 8 tes era v9.2.12) ternyata belum
+pernah ikut ter-commit ke repo; kini DIREKONSTRUKSI dari deskripsi README
+dan dijadikan file resmi tests/regression.js (jalankan: node
+tests/regression.js). Ditambah 6 tes baru: hitung concentration_ratio
+(dominan vs merata), fragile=true (RAKSASA + konsentrasi tinggi),
+fragile=false (RAKSASA tapi terdistribusi), fragile=false (bukan RAKSASA
+meski konsentrasi tinggi), kolom export, dan regresi konstanta. Regresi
+23 tes (17 lama + 6 baru): LULUS semua.
