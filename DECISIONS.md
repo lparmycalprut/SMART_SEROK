@@ -295,3 +295,51 @@ Total 36 tes, LULUS semua.
 > jangan menumpuk commit lokal di ujung sesi. Upload portal sebaiknya menyertakan
 > `tests/regression.js` dan `DECISIONS.md`; arsip portal hanya berisi 6 file ekstensi,
 > sehingga suite dan catatan keputusan tidak ikut berpindah.
+
+
+## 2026-08-27 — OPEN/CLOSE bebas trade debu (v9.2.19)
+
+**Masalah:** laporan user — 27 Agu jam 23:00 (WIB) harga naik ~3%, tapi R MONITOR
+menampilkan `harga -0,04%` (dan R meledak jadi TEMBOK). Verifikasi engine dilakukan
+dengan reproduksi data sintetis langsung pada `content.js` via hook suite regresi:
+
+- bar 23: open jujur 100,2 → close jujur 103,3 (+3,09%), effort 9 SOL;
+- ditambah satu sell DEBU `0,00001 SOL` di akhir bar di harga 100,16;
+- hasil engine v9.2.18: `chg_pct = -0,0399%` (≈ -0,04% di tabel), `R = 225,4× acuan`,
+  status **TEMBOK SELLER** — persis gejala yang dilaporkan.
+
+**Akar masalah:** `buildBars()` menghitung open/close dari SEMUA trade
+(`priced[0]` / `priced[last]`), sedangkan HIGH/LOW sudah disaring dengan
+`HL_MIN_SOL = 0,001` sejak v9.2.5 (kasus BABYSHIB — trade debu di harga ekstrem).
+Trade debu yang kebetulan menjadi trade pertama/terakhir bar menentukan harga
+buka/tutup → `chg_pct` salah → `R = |cvd_clean| / |chg_pct|` meledak, dan monitor
+membaca perlawanan yang sebenarnya tidak ada. Ini bukan kesalahan aritmetika
+(`close/open−1` memang benar); ini cacat integritas INPUT open/close.
+
+**Keputusan:**
+- Aturan v9.2.5 (high/low hanya dari trade ≥ `HL_MIN_SOL`) diterapkan JUGA ke
+  open/close: `open`/`close` diambil dari trade bernilai nyata, fallback ke semua
+  trade bila satu bar seluruhnya debu (sama seperti aturan wick — tidak boleh ada
+  bar tanpa harga).
+- `openRaw`/`closeRaw` (harga mentah tanpa saringan) disimpan per bar dan
+  diekspor sebagai kolom `open_raw`, `close_raw` di BARS — dikosongkan bila sama
+  dengan nilai yang dipakai, mengikuti pola `high_raw_mc` / `low_raw_mc`.
+- Catatan export FORENSIK diperbarui menjelaskan aturan baru.
+- **Tidak ada ambang sinyal yang diubah** (R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD,
+  R_BAND_*, HL_MIN_SOL). Namun untuk bar yang sebelumnya tercemar debu, `chg_pct`
+  dan `R` kini dihitung dari harga nyata — itu perbaikan yang diinginkan.
+
+**Tes:** +2 tes — 39 (reproduksi kasus -0,04% → sekarang +3,09% dan R wajar, bukan
+TEMBOK) dan 40 (debu di AWAL bar, bar seluruhnya debu → fallback, kolom export).
+Total 38 tes, LULUS semua.
+
+**Catatan penyebab alternatif** (tidak perlu dianggap bug, tapi bisa menjelaskan
+tampilan -0,04% pada data lama):
+1. Data capture tertinggal — close = trade terakhir yang BARU ter-capture; LIVE
+   sinkron tiap 15 menit, tanpa LIVE hanya feeds halaman. Cek label "berjalan"
+   pada bar.
+2. Definisi chg — `chg_pct` = open→close dalam bar (trade pertama vs terakhir),
+   bukan close-vs-close-jam-sebelumnya; kalau lonjakan terjadi di awal jam (gap),
+   bar bisa tampak datar.
+3. Zona waktu — label ekstensi selalu WIB (Asia/Jakarta); GMGN mengikuti timezone
+   browser. Kalau browser bukan WIB, "jam 23" di chart GMGN ≠ "jam 23" di ekstensi.

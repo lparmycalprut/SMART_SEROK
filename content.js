@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.18
+ * SMART SEROK — v9.2.19
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 2 sinyal (RETEST dihapus di v9.2.17).
  *
@@ -31,6 +31,12 @@
  * >=10x + |R| >= 50 + effort cukup) LANGSUNG jadi garis level saat
  * muncul — tidak menunggu R runtuh / arah cumCVD, tidak di-gagalkan
  * penembusan harga. Level = R besar.
+ *
+ * v9.2.19: OPEN/CLOSE dibersihkan dari trade debu (aturan HIGH/LOW
+ * v9.2.5 diterapkan juga ke harga buka/tutup bar). Kasus nyata 27 Agu
+ * 23:00: harga asli +3% tapi satu sell debu 0,0000 SOL di akhir bar
+ * membuat chg_pct terbaca -0,04% dan R meledak menjadi TEMBOK.
+ * open_raw/close_raw ditambahkan ke export untuk forensik.
  */
 
 (function () {
@@ -55,7 +61,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.18";             // dipakai di header file export
+const EXT_VER = "9.2.19";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -976,8 +982,21 @@ const EXT_VER = "9.2.18";             // dipakai di header file export
       // HIGH $250,5K padahal harga nyata tertinggi $121,8K.
       const real = priced.filter(t => t.sol >= HL_MIN_SOL);
       const hlSrc = real.length ? real : priced;
-      const open = priced.length ? priced[0].price : null;
-      const close = priced.length ? priced[priced.length - 1].price : null;
+      // v9.2.19: OPEN/CLOSE juga hanya dari trade bernilai nyata — aturan yang
+      // sama dengan HIGH/LOW di atas. Dulu open/close memakai SELURUH trade,
+      // jadi satu trade debu (≈0 SOL) yang kebetulan menjadi trade PERTAMA/
+      // TERAKHIR bar bisa mengubah harga buka/tutup menjadi angka yang tidak
+      // pernah benar-benar diperdagangkan, lalu chg_pct (dan R) salah. Kasus
+      // nyata 27 Agu 23:00: harga asli bar +3,09% (100,2 -> 103,3), tapi satu
+      // sell debu 0,0000 SOL di akhir bar di harga 100,16 membuat chg_pct
+      // terbaca -0,04% dan R meledak jadi TEMBOK. Versi mentah tetap
+      // disimpan (openRaw/closeRaw) untuk forensik di file export; kalau
+      // satu bar seluruhnya trade debu, fallback ke semua trade agar tidak
+      // ada bar tanpa harga (sama seperti aturan wick).
+      const open = hlSrc.length ? hlSrc[0].price : null;
+      const close = hlSrc.length ? hlSrc[hlSrc.length - 1].price : null;
+      const openRaw = priced.length ? priced[0].price : null;
+      const closeRaw = priced.length ? priced[priced.length - 1].price : null;
       const high = hlSrc.length ? Math.max(...hlSrc.map(p => p.price)) : null;
       const low = hlSrc.length ? Math.min(...hlSrc.map(p => p.price)) : null;
       // Jejak forensik: high/low kalau trade debu IKUT dihitung. Selisihnya
@@ -1025,6 +1044,7 @@ const EXT_VER = "9.2.18";             // dipakai di header file export
       const signedR = rAbs == null ? null : (effortCvd >= 0 ? rAbs : -rAbs);
       const R = rAbs;
       return { start, end: start + BAR_SEC, open, high, low, close, priceChgPct,
+        openRaw, closeRaw,
         cvd, cvdClean, buySol, sellSol, volSol, volUsd, washVol, washPct,
         txCount: list.length, uniqueMakers: mv.size, taggedMakers: taggedMakers.size,
         freshWallets, freshWalletPct, freshTxCount, freshBuySol, freshSellSol,
@@ -1926,18 +1946,21 @@ const EXT_VER = "9.2.18";             // dipakai di header file export
 
     L.push(`# NOTE: LEVEL ENGINE (v9.2.18). RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}, effort >=${ABSORB_MIN_CVD} SOL). v9.2.18: TIDAK ADA validasi — level LANGSUNG lahir di bar penyerapan; tidak ada syarat R runtuh, arah cumCVD, atau pergerakan harga, dan level tidak dibatalkan oleh penembusan. v9.2.17: sinyal RETEST dihapus dan syarat gerak harga >=5% dihapus. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP.`);
     L.push(`# NOTE: R MONITOR. R = |cvd_clean| / |chg_pct|, dinormalisasi ke r_baseline_median. r_state: BEBAS <${R_BAND_FREE}x, NORMAL, SERAP >=${R_BAND_ABSORB}x, TEMBOK_SELLER/TEMBOK_BUYER >=${R_BAND_WALL}x. Akhiran _RAKSASA hanya untuk candle yang lolos ambang sinyal (|R| >=${R_MIN_ABS} DAN lonjakan >=${R_SPIKE_MULT}x bar sebelumnya) sekaligus >=${R_BAND_BLAZE}x acuan; rasio besar tapi |R| kecil TIDAK dihitung raksasa karena tidak akan pernah jadi sinyal. +R = order SELL menahan, -R = order BUY menahan.`);
-    L.push(`# NOTE: FORENSIK WICK. high/low hanya dari trade >=${HL_MIN_SOL} SOL. high_raw/low_raw = versi TANPA saringan itu; kalau berbeda jauh berarti ada trade debu di harga ekstrem (lihat dust_tx). Kolom max_trade_sol = trade terbesar di bar itu.`);
+    L.push(`# NOTE: FORENSIK WICK & OPEN/CLOSE (v9.2.19). high/low DAN open/close hanya dari trade >=${HL_MIN_SOL} SOL — trade debu (≈0 SOL) tidak boleh menentukan wick maupun harga buka/tutup bar. Kasus nyata 27 Agu 23:00: harga asli bar +3% tapi satu sell debu di akhir bar membuat chg_pct terbaca -0,04% dan R meledak jadi TEMBOK. high_raw_mc/low_raw_mc = versi mentah wick; open_raw/close_raw = harga mentah open/close (dikosongkan bila sama dengan yang dipakai). dust_tx = jumlah trade debu di bar.`);
     L.push(`# NOTE: KONSENTRASI ORDER (v9.2.15). concentration_ratio per bar = max_trade_sol / vol_sol = porsi volume bar dari wallet terbesar. fragile=TRUE pada level = penyerapan kelas RAKSASA (lolos ambang sinyal DAN >=${R_BAND_BLAZE}x acuan) dengan concentration_ratio >=${CONCENTRATION_FRAGILE_THRESHOLD} saat level lahir — didominasi satu wallet, historisnya lebih sering TEMBUS saat harga kembali ke garis. Penanda ini METADATA (label/narasi/kolom export); syarat kelulusan level tidak berubah. Ambang ${CONCENTRATION_FRAGILE_THRESHOLD} masih AWAL, perlu kalibrasi backtest lanjutan.`);
     L.push("#");
-    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,concentration_ratio,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
+    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,concentration_ratio,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,open_raw,close_raw,partial");
 
     for (let bi = 0; bi < bars.length; bi++) {
       const b = bars[bi];
       const r = readR(b, rBase, bi > 0 ? bars[bi - 1] : null);
-      // high_raw/low_raw hanya dicetak kalau BEDA dari yang dipakai — kalau sama
-      // dikosongkan supaya file tidak membengkak oleh angka berulang.
+      // high_raw/low_raw dan open_raw/close_raw hanya dicetak kalau BEDA dari
+      // yang dipakai — kalau sama dikosongkan supaya file tidak membengkak oleh
+      // angka berulang.
       const hRaw = (b.highRawMc != null && b.highMc != null && Math.abs(b.highRawMc - b.highMc) > b.highMc * 1e-9) ? b.highRawMc.toFixed(2) : "";
       const lRaw = (b.lowRawMc != null && b.lowMc != null && Math.abs(b.lowRawMc - b.lowMc) > b.lowMc * 1e-9) ? b.lowRawMc.toFixed(2) : "";
+      const oRaw = (b.openRaw != null && b.open != null && Math.abs(b.openRaw - b.open) > b.open * 1e-9) ? b.openRaw.toExponential(4) : "";
+      const cRaw = (b.closeRaw != null && b.close != null && Math.abs(b.closeRaw - b.close) > b.close * 1e-9) ? b.closeRaw.toExponential(4) : "";
       L.push([
         wibIso(b.start), b.cluster,
         b.close != null ? b.close.toExponential(4) : "",
@@ -1955,7 +1978,7 @@ const EXT_VER = "9.2.18";             // dipakai di header file export
         b.freshWallets, b.freshWalletPct.toFixed(1), b.freshTxCount,
         b.freshBuySol.toFixed(2), b.freshSellSol.toFixed(2),
         b.buySol.toFixed(2), b.sellSol.toFixed(2), b.volSol.toFixed(2),
-        b.partial ? 1 : 0
+        oRaw, cRaw, b.partial ? 1 : 0
       ].join(","));
     }
     downloadCSV(`${exportBaseName()}.csv`, L.join("\n"));

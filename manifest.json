@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.18",
-  "description": "SMART SEROK v9.2.18 — level engine: LEVEL INSTAN (R besar = level, validasi dihapus total; v9.2.17: retest dihapus, syarat gerak >=5% dihapus); fetch rentang N hari penuh (walk bertahap); LIVE 4 hari, R MONITOR 24 jam terakhir.",
+  "version": "9.2.19",
+  "description": "SMART SEROK v9.2.19 — level engine: LEVEL INSTAN (R besar = level); OPEN/CLOSE dibersihkan dari trade debu supaya chg_pct dan R tidak salah (kasus 27 Agu 23:00 terbaca -0,04% padahal harga +3%); forensik open_raw/close_raw di export; fetch rentang N hari penuh; LIVE 4 hari.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
