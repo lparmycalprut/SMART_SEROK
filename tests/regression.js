@@ -1,0 +1,410 @@
+#!/usr/bin/env node
+/**
+ * SMART SEROK — suite regresi (mulai v9.2.15 dipakai sebagai file tes resmi)
+ * ==============================================================================
+ * Cara jalankan:  node tests/regression.js
+ * Keluar:         "N/N LULUS" + exit code 0 (atau exit 1 bila ada yang gagal).
+ *
+ * Sejarah: README menyebut "regresi 9 tes" (v9.2.11) lalu "regresi 17 tes"
+ * (v9.2.12), tetapi file suite-nya belum pernah ikut ter-commit ke repo
+ * (riwayat git ter-squash). Suite lama DIREKONSTRUKSI di sini dari deskripsi
+ * README v9.2.11/v9.2.12 supaya bisa terus dijalankan, lalu ditambah tes baru
+ * v9.2.15. Total: 23 tes = 17 lama + 6 baru.
+ *
+ * content.js adalah content script browser (IIFE, tanpa export). Suite ini
+ * menjalankan file itu di sandbox Node; content.js memanggil hook
+ * globalThis.__SMART_SEROK_TEST__ (guard: hanya berfungsi bila simbol itu
+ * berupa fungsi SEBELUM file dievaluasi — di browser tidak pernah terjadi).
+ */
+
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+const ROOT = path.join(__dirname, "..");
+const SRC = fs.readFileSync(path.join(ROOT, "content.js"), "utf8");
+
+// ── Harness: jalankan content.js di sandbox Node ────────────────────────────
+function loadEngine() {
+  let api = null;
+  const noop = () => {};
+  const sandbox = {
+    console, Math, JSON, Date, Object, Array, Number, String, Boolean, RegExp, Error,
+    Map, Set, Promise, Symbol, BigInt, parseInt, parseFloat, isNaN, isFinite,
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    requestAnimationFrame: noop,
+    MutationObserver: class { observe() {} disconnect() {} takeRecords() { return []; } },
+    alert: noop,
+    fetch: async function () {},
+    XMLHttpRequest: class {
+      open() {} send() {} addEventListener() {}
+    },
+    document: {
+      body: null,
+      addEventListener: noop,
+      removeEventListener: noop,
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ style: {}, classList: { add: noop, remove: noop, toggle: noop }, addEventListener: noop, setAttribute: noop, appendChild: noop }),
+      documentElement: {},
+    },
+  };
+  sandbox.window = sandbox;                 // window === global sandbox
+  sandbox.location = { pathname: "/", origin: "https://gmgn.ai" };
+  sandbox.self = sandbox;
+  sandbox.__SMART_SEROK_TEST__ = (x) => { api = x; };
+  vm.createContext(sandbox);
+  vm.runInContext(SRC, sandbox, { filename: "content.js" });
+  if (!api) throw new Error("Hook __SMART_SEROK_TEST__ tidak terpanggil — content.js gagal dimuat?");
+  return api;
+}
+
+// ── Pabrik trade sintetis (TF 1H, bucket jam lurus) ─────────────────────────
+const H = 3600;
+const B = 1755900000;                       // jam-aligned epoch (WIB netral utk tes)
+let uid = 0;
+function T(bar, offsetSec, maker, event, sol, price) {
+  return { maker, event, sol, price, ts: B + bar * H + offsetSec,
+           tx_hash: "tx" + (++uid), token: 0, usd: sol * price, tags: [] };
+}
+// Bar "latar" biasa: dua trade satu arah, harga open->close bergerak pct tertentu.
+function bgBar(bar, event, totalSol, openP, closeP, makers) {
+  const half = totalSol / 2;
+  const mk = makers || ["bg" + bar + "a", "bg" + bar + "b"];
+  return [
+    T(bar, 600, mk[0], event, half, openP),
+    T(bar, 2400, mk[1] || mk[0], event, half, closeP),
+  ];
+}
+
+/**
+ * Skenario level lengkap: 8 bar latar (R = baseR) -> bar penyerapan (+34 SOL,
+ * chg ~0.62% -> R ~55) -> 2 bar bukti (harga -11%, R runtuh, cumCVD turun)
+ * -> 1 bar menjauh -> 1 bar retest (balik menyentuh garis HIGH, R normal,
+ * cumCVD naik). Retest mungkin muncul tergantung parameter.
+ *
+ * Opsi:
+ *   whale : true  -> 30 SOL dari SATU wallet (concentration ~0.88)
+ *            false -> 30 SOL tersebar ke 10 wallet (concentration ~0.09)
+ *   baseR : median |R| bar latar. 1.5 -> rasio penyerapan ~36x (RAKSASA),
+ *           5 -> rasio ~11x (tembok besar tapi BUKAN raksasa).
+ */
+function scenarioTrades({ whale = true, baseR = 1.5 } = {}) {
+  const trades = [];
+  // 8 bar latar: harga naik +1%/bar, R = baseR
+  let p = 100;
+  for (let i = 0; i < 8; i++) {
+    const open = p, close = p * 1.01;
+    trades.push(...bgBar(i, baseR >= 0 ? "buy" : "sell", Math.abs(baseR), open, close));
+    p = close;
+  }
+  // Bar 8: PENYERAPAN (resistance candidate). open 108.28 -> close 108.95 (+0.618%),
+  // cvdClean +34 SOL  ->  R ~55 (>= 50), lonjakan vs bar 7 = 55/baseR.
+  const abs8 = [
+    T(8, 600, "small1", "buy", 1, 108.28),
+  ];
+  if (whale) {
+    abs8.push(T(8, 1200, "WHALE", "buy", 30, 108.60));
+  } else {
+    for (let k = 1; k <= 10; k++) abs8.push(T(8, 1100 + k * 10, "dist" + k, "buy", 3, 108.60));
+  }
+  abs8.push(T(8, 1800, "small2", "buy", 1, 108.70));
+  abs8.push(T(8, 2400, "small3", "buy", 1, 108.80));
+  abs8.push(T(8, 3000, "small4", "buy", 1, 108.95));
+  trades.push(...abs8);
+  // Bar 9-10: bukti — harga jatuh (low 97.5, -10.5% dari close 108.95), R runtuh,
+  // cumCVD turun. Bar 10 diberi effort >= 3 SOL & R normal supaya LOLOS saringan
+  // kualitas candle dan blok arming di akhir iterasi benar-benar jalan
+  // (bar ber-effort < 3 SOL di-`continue` sebelum pendingArm dicatat).
+  trades.push(T(9, 600, "s1", "sell", 0.5, 103));
+  trades.push(T(9, 2400, "s2", "sell", 0.5, 98));
+  trades.push(T(10, 600, "s3", "sell", 1.5, 100));
+  trades.push(T(10, 2400, "s4", "sell", 1.5, 97.5));
+  // Bar 11: tetap jauh dari garis (close 93, ~15% di bawah) -> level armed.
+  trades.push(T(11, 600, "s5", "sell", 1.5, 96.5));
+  trades.push(T(11, 2400, "s6", "sell", 1.5, 93));
+  // Bar 12: RETEST — naik sentuh garis (high 108.5 >= garis 108.95 - 0.5%),
+  // R = 6/3.33 ~ 1.8 = 1.2x acuan (normal), cumCVD naik (buy).
+  trades.push(T(12, 600, "r1", "buy", 3, 105));
+  trades.push(T(12, 2400, "r2", "buy", 3, 108.5));
+  return trades;
+}
+
+// ── Runner mini ─────────────────────────────────────────────────────────────
+const results = [];
+let api = null;
+function test(name, fn) {
+  try { fn(); results.push([true, name, ""]); }
+  catch (e) { results.push([false, name, String(e && e.message || e)]); }
+}
+function ok(cond, msg) { if (!cond) throw new Error(msg || "assert gagal"); }
+function eq(a, b, msg) { if (a !== b) throw new Error((msg || "eq") + ": " + JSON.stringify(a) + " !== " + JSON.stringify(b)); }
+function near(a, b, tol, msg) { if (!(Math.abs(a - b) <= tol)) throw new Error((msg || "near") + ": " + a + " vs " + b); }
+
+// luminansi relatif WCAG + rasio kontras (dipakai tes warna v9.2.12)
+function hexRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+function relLum(hex) {
+  const f = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const [r, g, b] = hexRgb(hex).map(f);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrast(a, b) { const l1 = relLum(a), l2 = relLum(b); return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); }
+
+// ── Muat engine sekali ──────────────────────────────────────────────────────
+api = loadEngine();
+
+// ── Data skenario yang dipakai beberapa tes ─────────────────────────────────
+// buildBars mengharapkan nowTs dalam MILLISECOND (dibagi 1000 di dalam).
+const NOW_MS = (B + 20 * H) * 1000;
+const barsWhale = api.buildBars(scenarioTrades({ whale: true,  baseR: 1.5 }), NOW_MS);
+const barsDist  = api.buildBars(scenarioTrades({ whale: false, baseR: 1.5 }), NOW_MS);
+const barsCalm  = api.buildBars(scenarioTrades({ whale: true,  baseR: 5   }), NOW_MS);
+const scanWhale = api.scanSignals(barsWhale);
+const scanDist  = api.scanSignals(barsDist);
+const scanCalm  = api.scanSignals(barsCalm);
+const lvlEvent = (scan) => (scan.events || []).find(e => e.signal.indexOf("TERBENTUK") >= 0) || null;
+const retestEvent = (scan) => (scan.events || []).find(e => e.signal.indexOf("RETEST") >= 0) || null;
+
+// ══ REGRESI LAMA — direkonstruksi dari README v9.2.11 (9 tes) ═══════════════
+
+test("01 absorptionAt menerima kandidat: |R|>=50, lonjakan >=10x, effort cukup", () => {
+  const cand = api.absorptionAt(barsWhale, 8);
+  ok(cand, "bar penyerapan (idx 8) harus jadi kandidat");
+  eq(cand.kind, "resistance", "cvdClean positif -> kandidat resistance");
+  ok(cand.mult >= api.R_SPIKE_MULT, "lonjakan >= 10x bar sebelumnya");
+});
+
+test("02 absorptionAt menolak |R| di bawah R_MIN_ABS walau rasio besar", () => {
+  // Kasus nyata Plumber 19 Agu 08:00: |R| 45,8 (rasio 30x) -> BUKAN kandidat.
+  const trades = [];
+  let p = 100;
+  for (let i = 0; i < 8; i++) { trades.push(...bgBar(i, "buy", 3, p, p * 1.0638)); p *= 1.0638; }
+  // bar 8: cvd +30, chg +0.655% -> R ~45.8 (>= 10x R bar 7 = 3/6.38 = 0.47)
+  trades.push(T(8, 600, "x1", "buy", 1, p), T(8, 2400, "x2", "buy", 29, p * 1.00655));
+  const bars = api.buildBars(trades, NOW_MS);
+  eq(api.absorptionAt(bars, 8), null, "|R| 45.8 < 50 harus ditolak");
+});
+
+test("03 absorptionAt menolak lonjakan < 10x meski |R| besar", () => {
+  const bars = api.buildBars([
+    // bar 0: R = 20 (cvd 20, chg 1%) — acuan tinggi
+    T(0, 600, "a", "buy", 10, 100), T(0, 2400, "b", "buy", 10, 101),
+    // bar 1: R = 80 (cvd 40, chg 0.5%) -> lonjakan cuma 4x
+    T(1, 600, "c", "buy", 20, 102), T(1, 2400, "d", "buy", 20, 102.51),
+  ], NOW_MS);
+  eq(api.absorptionAt(bars, 1), null, "lonjakan 4x < 10x harus ditolak");
+});
+
+test("04 absorptionAt menolak bar sepi (effort < ABSORB_MIN_CVD)", () => {
+  const bars = api.buildBars([
+    T(0, 600, "a", "buy", 0.5, 100), T(0, 2400, "b", "buy", 0.5, 101),       // R = 1
+    T(1, 600, "c", "buy", 1, 102), T(1, 2400, "d", "buy", 1, 102.033),       // R ~60, effort 2 < 3
+  ], NOW_MS);
+  eq(api.absorptionAt(bars, 1), null, "effort 2 SOL < 3 SOL harus ditolak");
+});
+
+test("05 isAbsorbGrade: rasio besar tapi |R| < 50 -> false (Plumber 19 Agu)", () => {
+  const prev = { R: 1.5 }, weak = { R: 45.8 }, strong = { R: 55 };
+  eq(api.isAbsorbGrade(weak, prev), false, "|R| 45.8 di bawah lantai 50");
+  eq(api.isAbsorbGrade(strong, prev), true, "|R| 55 + lonjakan 36x lolos");
+  eq(api.isAbsorbGrade({ R: 55 }, null), true, "tanpa prev: jangan gugurkan");
+});
+
+test("06 readR: status RAKSASA (🔥) hanya bila grade DAN rasio >= R_BAND_BLAZE", () => {
+  const base = 1.5;
+  const weak = api.readR({ priceChgPct: 1, cvdClean: 45.8, R: 45.8, signedR: 45.8 }, base, { R: 1.5 });
+  eq(weak.code, "TEMBOK", "tetap tembok");
+  ok(!weak.blaze, "tidak menyala: |R| 45.8 < ambang sinyal");
+  ok(weak.label.indexOf("🔥") < 0, "label tanpa 🔥");
+  const strong = api.readR({ priceChgPct: 1, cvdClean: 55, R: 55, signedR: 55 }, base, { R: 1.5 });
+  eq(strong.code, "TEMBOK", "tembok");
+  ok(strong.blaze, "menyala: grade + rasio 36.7x >= 12x");
+  ok(strong.label.indexOf("TEMBOK SELLER") >= 0 && strong.label.indexOf("🔥") >= 0, "label TEMBOK SELLER 🔥");
+  ok(strong.desc.indexOf("RAKSASA") >= 0, "bacaan menyebut serapan RAKSASA");
+  // grade tapi rasio < 12x -> tembok biasa
+  const mid = api.readR({ priceChgPct: 1, cvdClean: 55, R: 55, signedR: 55 }, 10, { R: 1.5 });
+  ok(!mid.blaze, "grade tanpa rasio 12x tidak menyala");
+});
+
+test("07 verifyAbsorption: bukti dinilai MAJU — penembusan setelah bukti tidak membatalkan (Plumber 21 Agu)", () => {
+  // Skenario whale + 1 bar tambahan yang menutup DI ATAS garis (+5%).
+  const trades = scenarioTrades({ whale: true, baseR: 1.5 });
+  trades.push(T(13, 600, "p1", "buy", 3, 112), T(13, 2400, "p2", "buy", 3, 114.5));
+  const bars = api.buildBars(trades, NOW_MS);
+  const proof = api.verifyAbsorption(bars, api.absorptionAt(bars, 8));
+  eq(proof.status, "confirmed", "bukti lengkap duluan -> CONFIRMED, pantulan belakangan tidak membatalkan");
+});
+
+test("08 verifyAbsorption: tembus > LVL_FAIL_PCT sebelum bukti -> GAGAL", () => {
+  const trades = scenarioTrades({ whale: true, baseR: 1.5 }).filter(t => t.ts < B + 9 * H);
+  // bar 9-10 diganti: harga MALAH naik menembus garis (close > high*1.02 = 111.13)
+  trades.push(T(9, 600, "p1", "buy", 5, 110), T(9, 2400, "p2", "buy", 5, 113));
+  trades.push(T(10, 600, "p3", "buy", 5, 114), T(10, 2400, "p4", "buy", 5, 116));
+  const bars = api.buildBars(trades, NOW_MS);
+  const proof = api.verifyAbsorption(bars, api.absorptionAt(bars, 8));
+  eq(proof.status, "failed", "tembus sebelum terbukti -> gagal, tidak jadi level");
+});
+
+test("09 buildBars: HIGH/LOW kebal trade debu, high_raw tetap mencatat (BABYSHIB 20 Agu 01:00)", () => {
+  const bars = api.buildBars([
+    T(0, 600, "real", "buy", 0.53, 100),
+    T(0, 1200, "real", "buy", 0.53, 98),
+    T(0, 1800, "dust", "buy", 0.0000, 250),   // debu di harga ekstrem
+  ], NOW_MS);
+  eq(bars.length, 1, "satu bar");
+  eq(bars[0].high, 100, "HIGH hanya dari trade >= 0.001 SOL");
+  eq(bars[0].low, 98, "LOW hanya dari trade >= 0.001 SOL");
+  eq(bars[0].highRaw, 250, "high_raw mencatat versi tanpa saringan");
+  eq(bars[0].dustTx, 1, "dust_tx menghitung trade debu");
+});
+
+// ══ REGRESI LAMA — direkonstruksi dari README v9.2.12 (8 tes warna/kontras) ══
+
+test("10 wallColor tembok BIASA memakai warna kalem (bukan #ef4444)", () => {
+  eq(api.wallColor("seller", 0, false), "#77403f", "merah bata teredam");
+  eq(api.wallColor("seller", 0.6, false), "#8a4744", "merah bata sedikit lebih hidup");
+  eq(api.wallColor("buyer", 0, false), "#3d6b50", "hijau lumut teredam");
+  eq(api.wallColor("buyer", 0.6, false), "#457a5a", "hijau lumut sedikit lebih hidup");
+});
+
+test("11 wallColor RAKSASA memakai warna menyala penuh", () => {
+  eq(api.wallColor("seller", 1, true), "#ff3355", "seller raksasa #ff3355");
+  eq(api.wallColor("buyer", 1, true), "#00ff5e", "buyer raksasa #00ff5e");
+});
+
+test("12 wallTextColor: versi TERANG dari rona sama utk teks pill/tag", () => {
+  eq(api.wallTextColor("seller", 0, false), "#cf8a84");
+  eq(api.wallTextColor("buyer", 0, false), "#7fc79a");
+  // candle raksasa: warna teks = warna isian (tidak perlu versi terang lagi)
+  eq(api.wallTextColor("seller", 1, true), api.wallColor("seller", 1, true));
+  eq(api.wallTextColor("buyer", 1, true), api.wallColor("buyer", 1, true));
+});
+
+test("13 loncatan luminansi seller biasa -> raksasa >= 2x", () => {
+  const biasa = relLum("#8a4744"), raksasa = relLum("#ff3355");
+  ok(raksasa / biasa >= 2, "rasio luminansi " + (raksasa / biasa).toFixed(2) + "x < 2x");
+});
+
+test("14 loncatan luminansi buyer biasa -> raksasa >= 4x", () => {
+  const biasa = relLum("#457a5a"), raksasa = relLum("#00ff5e");
+  ok(raksasa / biasa >= 4, "rasio luminansi " + (raksasa / biasa).toFixed(2) + "x < 4x");
+});
+
+test("15 kontras teks wallTextColor terhadap latar gelap #0b1220 >= 6.5x", () => {
+  ok(contrast("#cf8a84", "#0b1220") >= 6.5, "seller " + contrast("#cf8a84", "#0b1220").toFixed(2) + "x");
+  ok(contrast("#7fc79a", "#0b1220") >= 6.5, "buyer " + contrast("#7fc79a", "#0b1220").toFixed(2) + "x");
+});
+
+test("16 wallGlow: 0 di bawah R_BAND_WALL, non-grade dibatasi 0.6, grade penuh 0..1", () => {
+  eq(api.wallGlow(3.9, true), 0, "di bawah tembok tidak menyala");
+  eq(api.wallGlow(200, false), 0.6, "tembok bukan kandidat sinyal tidak pernah penuh");
+  near(api.wallGlow(api.R_BAND_BLAZE, true), 1, 1e-9, "grade mencapai 1 di 12x");
+  ok(api.wallGlow(100, true) === 1, "jenuh di atas 12x (logaritmik lalu clamp)");
+  ok(api.wallGlow(6, true) > api.wallGlow(5, true), "monoton naik antara 4x..12x");
+});
+
+test("17 skema warna tidak berubah: konstanta band + isian raksasa = teks raksasa", () => {
+  eq(api.R_BAND_WALL, 4);
+  eq(api.R_BAND_BLAZE, 12);
+  eq(api.R_BAND_ABSORB, 1.5);
+  eq(api.R_BAND_FREE, 0.5);
+  eq(api.wallTextColor("seller", 0.3, true), api.wallColor("seller", 0.3, true), "raksasa: teks = isian");
+  eq(api.wallTextColor("buyer", 0.9, true), api.wallColor("buyer", 0.9, true), "raksasa: teks = isian");
+});
+
+// ══ REGRESI BARU — v9.2.15 konsentrasi order + level RAPUH (6 tes) ═══════════
+
+test("18 concentration_ratio benar: 1 wallet dominan vs banyak wallet merata", () => {
+  // Bar dominan: whale 30 SOL + 9 wallet 1 SOL -> 30/39 = 0.769
+  const dom = api.buildBars([
+    T(0, 600, "w", "buy", 30, 100),
+    ...Array.from({ length: 9 }, (_, i) => T(0, 1200 + i * 100, "s" + i, "buy", 1, 101)),
+  ], NOW_MS);
+  near(dom[0].concentrationRatio, 30 / 39, 1e-9, "dominan");
+  near(dom[0].maxTradeSol, 30, 1e-9, "max_trade_sol = volume wallet terbesar");
+  near(dom[0].volSol, 39, 1e-9, "vol_sol bar");
+  // Bar merata: 10 wallet 1 SOL -> 1/10 = 0.1
+  const flat = api.buildBars(
+    Array.from({ length: 10 }, (_, i) => T(0, 600 + i * 100, "m" + i, "buy", 1, 100 + i * 0.1)),
+    NOW_MS);
+  near(flat[0].concentrationRatio, 0.1, 1e-9, "merata");
+  // Skenario penuh: whale -> ~0.88, tersebar -> ~0.09
+  near(barsWhale[8].concentrationRatio, 30 / 34, 1e-9, "bar penyerapan whale");
+  near(barsDist[8].concentrationRatio, 3 / 34, 1e-9, "bar penyerapan terdistribusi");
+});
+
+test("19 level RAKSASA-grade + konsentrasi tinggi -> fragile=TRUE + tag judul + narasi", () => {
+  const ev = lvlEvent(scanWhale);
+  ok(ev, "skenario whale harus menghasilkan sinyal TERBENTUK");
+  eq(ev.signal, "RESISTANCE TERBENTUK", "nama kanonik tidak berubah");
+  eq(ev.level.fragile, true, "RAKSASA (36.7x acuan) + conc 0.88 >= 0.6 -> fragile");
+  near(ev.level.concentrationRatio, 30 / 34, 1e-9, "konsentrasi tersimpan di level");
+  ok(api.signalTitle(ev).indexOf("(RAPUH — whale tunggal)") >= 0, "judul diberi tag RAPUH");
+  const nar = api.buildNarrative(ev);
+  ok(nar.indexOf("didominasi satu wallet") >= 0 && nar.indexOf("88% dari volume bar") >= 0,
+     "narasi memuat kalimat whale tunggal + persentase");
+  // retest level rapuh juga membawa penanda di narasi
+  const rt = retestEvent(scanWhale);
+  ok(rt, "skenario whale juga memicu retest");
+  ok(api.buildNarrative(rt).indexOf("RAPUH") >= 0, "narasi retest memuat penanda RAPUH");
+});
+
+test("20 level RAKSASA-grade tapi konsentrasi rendah -> fragile=FALSE", () => {
+  const ev = lvlEvent(scanDist);
+  ok(ev, "skenario terdistribusi tetap melahirkan level (syarat tidak berubah)");
+  eq(ev.level.fragile, false, "conc 0.09 < 0.6 -> tidak rapuh walaupun RAKSASA");
+  eq(api.signalTitle(ev), ev.signal, "judul tanpa tag");
+  ok(api.buildNarrative(ev).indexOf("RAPUH") < 0, "narasi tanpa penanda RAPUH");
+  const rt = retestEvent(scanDist);
+  ok(rt && api.buildNarrative(rt).indexOf("RAPUH") < 0, "narasi retest juga tanpa RAPUH");
+});
+
+test("21 level BUKAN RAKSASA-grade -> fragile selalu FALSE meski konsentrasi tinggi", () => {
+  // baseR 5 -> rasio penyerapan 11x < 12x: level sah, tembok besar, tapi bukan raksasa.
+  const ev = lvlEvent(scanCalm);
+  ok(ev, "level tetap terbentuk (penanda RAPUH bukan filter)");
+  eq(ev.level.fragile, false, "rasio 11x < 12x -> tidak rapuh walau conc 0.88");
+  eq(api.signalTitle(ev), ev.signal, "judul tetap kanonik");
+  const bar8 = barsCalm[8];
+  const base = api.rBaseline(barsCalm);
+  eq(api.isAbsorbGrade(bar8, barsCalm[7]), true, "tetap kandidat sinyal (|R|>=50, >=10x prev)");
+  eq(api.isBlazeGrade(bar8, barsCalm[7], base), false, "tapi bukan kelas RAKSASA (12x acuan)");
+});
+
+test("22 export CSV: kolom concentration_ratio di BARS + fragile/concentration di LEVEL & SINYAL", () => {
+  const header = SRC.split("\n").find(l => l.indexOf("\"bar_wib,cluster,") >= 0);
+  ok(header, "header BARS ditemukan");
+  ok(header.indexOf("max_trade_sol,concentration_ratio") >= 0,
+     "concentration_ratio tepat setelah max_trade_sol");
+  ok(SRC.indexOf("fragile=") >= 0 && SRC.indexOf("concentration_ratio_at_formation=") >= 0,
+     "baris LEVEL & SINYAL memuat field fragile + concentration_ratio_at_formation");
+});
+
+test("23 konstanta v9.2.15: ambang rapuh 0.6, LIVE 4 hari, R MONITOR 24 jam; threshold lama tak berubah", () => {
+  eq(api.CONCENTRATION_FRAGILE_THRESHOLD, 0.6, "ambang awal konsentrasi");
+  eq(api.LIVE_FETCH_SEC, 4 * 24 * 3600, "fetch awal LIVE = 4 hari");
+  eq(api.R_MON_WINDOW_SEC, 24 * 3600, "jendela R MONITOR = 24 jam");
+  eq(api.rMonWindowBars(), 24, "TF 1H -> 24 candle terakhir");
+  // pengaman: tidak ada threshold deteksi level yang bergeser
+  eq(api.R_SPIKE_MULT, 10);
+  eq(api.R_MIN_ABS, 50);
+  eq(api.ABSORB_MIN_CVD, 3);
+  eq(api.LVL_CONFIRM_BARS, 12);
+  eq(api.LVL_R_DROP, 0.5);
+  eq(api.LVL_MIN_MOVE_PCT, 5);
+  eq(api.LVL_FAIL_PCT, 2);
+  eq(api.LVL_RETEST_R_MAX, 1.5);
+  eq(api.HL_MIN_SOL, 0.001);
+});
+
+// ── Laporkan ────────────────────────────────────────────────────────────────
+let pass = 0;
+for (const [good, name, err] of results) {
+  if (good) { pass++; console.log("  LULUS  " + name); }
+  else console.log("  GAGAL  " + name + "\n         -> " + err);
+}
+console.log("");
+if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (17 lama + ${results.length - 17} baru).`);
+else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }

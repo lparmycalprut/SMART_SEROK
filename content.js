@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.14
+ * SMART SEROK — v9.2.15
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 4 sinyal, semua sinyal lama dihapus.
  *
@@ -15,6 +15,11 @@
  * Level dinyatakan sebagai HIGH-LOW candle penyerapan dalam MARKET CAP.
  * Penyerapan yang harganya justru menembus lebih jauh dianggap GAGAL dan tidak
  * memunculkan level maupun sinyal.
+ *
+ * v9.2.15: level dari penyerapan RAKSASA yang didominasi SATU wallet
+ * (concentration_ratio = max_trade_sol / vol_sol >= 0,6) ditandai RAPUH —
+ * murni metadata/label, syarat kelulusan sinyal tidak berubah.
+ * Mode LIVE memuat 4 hari data; R MONITOR menampilkan 24 jam terakhir.
  */
 
 (function () {
@@ -39,7 +44,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.14";             // dipakai di header file export
+const EXT_VER = "9.2.15";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -99,14 +104,31 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
   // menjawab dua hal secara manual:
   //   1. Saat harga bergerak — apakah ada perlawanan? (R kecil = tembus bersih)
   //   2. Saat harga di support/resistance — apakah pihak lawan masuk? (R melonjak)
-  const R_MON_BARS = 40;                // candle terakhir yang ditampilkan
+  const R_MON_BARS = 40;                // batas atas candle yang ditampilkan (jendela aktif = R_MON_WINDOW_SEC)
   const R_MON_TABLE_BARS = 12;          // candle terakhir yang masuk tabel
+  // Jendela WAKTU tampilan R MONITOR: hanya 24 jam terakhir yang digambar,
+  // walaupun data yang tertangkap lebih panjang (LIVE memuat 4 hari sejak
+  // v9.2.15). Acuan median (rBaseline) TETAP dihitung dari seluruh klaster
+  // aktif supaya r_ratio/r_state di layar identik dengan file export.
+  const R_MON_WINDOW_SEC = 24 * 3600;   // 24 jam terakhir
   // |R| dinormalisasi ke median |R| klaster aktif, karena skala R berbeda tiap
   // token/likuiditas. Angka mentah tidak bisa dibandingkan lintas token.
   const R_BAND_FREE = 0.5;              // < 0,5× acuan → BEBAS (tanpa perlawanan)
   const R_BAND_ABSORB = 1.5;            // ≥ 1,5× acuan → SERAP (perlawanan muncul)
   const R_BAND_WALL = 4;                // ≥ 4×   acuan → TEMBOK (perlawanan kuat)
   const R_BAND_BLAZE = 12;              // ≥ 12×  acuan → tembok EKSTREM (hanya menyala penuh bila lolos ambang sinyal)
+  // KONSENTRASI ORDER (v9.2.15) — porsi volume bar yang berasal dari SATU
+  // wallet terbesar: concentration_ratio = max_trade_sol / vol_sol.
+  // Backtest manual menemukan level yang lahir dari absorpsi RAKSASA justru
+  // lebih sering TEMBUS saat di-retest. Hipotesis: R ekstrem yang terpusat di
+  // satu wallet (order tunggal besar) tidak meninggalkan "penjaga" lain di
+  // level itu — beda dengan absorpsi terdistribusi dari banyak trade
+  // independen yang menciptakan defense berlapis. Level RAKSASA dengan
+  // konsentrasi ≥ ambang ini ditandai fragile (RAPUH) sebagai METADATA:
+  // label + narasi + kolom export, TIDAK mengubah syarat kelulusan level.
+  // Angka 0,6 adalah nilai AWAL — perlu dikalibrasi ulang setelah backtest
+  // dengan lebih banyak data.
+  const CONCENTRATION_FRAGILE_THRESHOLD = 0.6;  // ≥ 0,6 → level rapuh (whale tunggal)
   const R_MON_MIN_EFFORT = 1;           // SOL — di bawah ini R tidak bermakna (bar sepi)
   const HL_MIN_SOL = 0.001;             // SOL — trade di bawah ini tidak boleh menentukan HIGH/LOW
   const R_MON_MOVE_PCT = 3;             // |chg| ≥ ini dianggap "harga benar-benar bergerak"
@@ -616,7 +638,12 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
 
 
   const LIVE_EVERY_MS = 15 * 60 * 1000;
-  const LIVE_WINDOW_SEC = 48 * 3600;
+  // Jendela fetch AWAL mode LIVE: 4 HARI data (naik dari 48 jam, v9.2.15)
+  // supaya mesin level punya ruang pembuktian (12 bar sesudah penyerapan)
+  // untuk penyerapan yang terjadi 2-3 hari lalu. Sinkron tiap 15 menit
+  // tetap inkremental (dari trade terakhir). Tampilan R MONITOR TIDAK ikut
+  // melebar: tetap 24 jam terakhir (R_MON_WINDOW_SEC).
+  const LIVE_FETCH_SEC = 4 * 24 * 3600;
   function maxTradeTs() { let m = 0; for (const t of capturedTrades.values()) if (t.ts > m) m = t.ts; return m; }
   function paintLiveBtn() {
     const btn = document.getElementById("gmgn-btn-live");
@@ -658,13 +685,13 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     await refreshHolderContext(false);
     bypassRangeFilter = true;
     const now = Math.floor(Date.now() / 1000);
-    const windowStart = now - LIVE_WINDOW_SEC;
+    const windowStart = now - LIVE_FETCH_SEC;
     let startTs = windowStart;
     const last = maxTradeTs();
     if (!fullWindow && last > startTs) startTs = last + 1;
     const endTs = now + 60;
     const st = document.getElementById("gmgn-status-text");
-    if (st) { st.innerText = fullWindow ? "LIVE · muat 48 jam…" : "LIVE · sync baru…"; st.style.color = "#38bdf8"; }
+    if (st) { st.innerText = fullWindow ? "LIVE · muat 4 hari…" : "LIVE · sync baru…"; st.style.color = "#38bdf8"; }
     const delay = getCooldownMs();
     const base = `https://gmgn.ai/vas/api/v1/token_trades/sol/${mint}?event=buy&event=sell&limit=200`;
     let added = 0;
@@ -704,7 +731,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     }
     try {
       // from/to detik (sama seperti Background Fetch). Jangan milidetik — API GMGN menolak, LIVE 0 TX.
-      // full window: tanpa from, mundur dari now sampai 48 jam (from 48 jam sering dipotong API).
+      // full window: tanpa from, mundur dari now sampai 4 hari (from jauh di belakang sering dipotong API).
       if (fullWindow) {
         const oldest = await pullPages(0, endTs, 200);
         if (liveMode && oldest > windowStart) await pullPages(windowStart, Math.max(windowStart + 1, oldest - 1), 80);
@@ -833,6 +860,11 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       const freshWallets = freshMakers.size;
       const freshWalletPct = mv.size > 0 ? (freshWallets / mv.size) * 100 : 0;
       let top1 = 0; for (const v of mv.values()) if (v > top1) top1 = v;
+      // Konsentrasi order (v9.2.15): porsi volume bar yang datang dari SATU
+      // wallet terbesar. Mirip topWalletPct, tapi disimpan sebagai rasio 0-1
+      // dan dipakai mesin level untuk menandai penyerapan "whale tunggal".
+      // volSol = 0 (bar tanpa volume nyata) -> null, bukan 0.
+      const concentrationRatio = volSol > 0 ? top1 / volSol : null;
       const priceChgPct = (open && close && open > 0) ? (close / open - 1) * 100 : null;
       // R bertanda dari cvdClean: + = serap BUY, − = serap SELL
       const effortCvd = cvdClean;
@@ -844,6 +876,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
         txCount: list.length, uniqueMakers: mv.size, taggedMakers: taggedMakers.size,
         freshWallets, freshWalletPct, freshTxCount, freshBuySol, freshSellSol,
         topWalletPct: volSol > 0 ? (top1 / volSol) * 100 : 0, R, signedR,
+        concentrationRatio,
         highRaw, lowRaw, dustTx, maxTradeSol: top1,
         partial: (start + BAR_SEC) > now };
     });
@@ -1176,9 +1209,16 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
              bars: after.length, moveBars: extIdx + 1 };
   }
 
-  function makeLevelEvent(cand, proof, bars) {
+  function makeLevelEvent(cand, proof, bars, base) {
     const isRes = cand.kind === "resistance";
     const b = cand.bar;
+    // Metadata RAPUH (v9.2.15): penyerapan kelas RAKSASA yang didominasi SATU
+    // wallet (concentration_ratio ≥ CONCENTRATION_FRAGILE_THRESHOLD).
+    // Murni label/narasi/kolom export — syarat kelulusan level di atas TIDAK
+    // disentuh, jadi kapan sinyal muncul tidak berubah.
+    const conc = b.concentrationRatio != null ? b.concentrationRatio : null;
+    const fragile = isBlazeGrade(b, bars[cand.idx - 1] || null, base)
+      && conc != null && conc >= CONCENTRATION_FRAGILE_THRESHOLD;
     return {
       signal: isRes ? SIG_RESISTANCE : SIG_SUPPORT,
       side: isRes ? "top" : "bottom",
@@ -1192,7 +1232,10 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
         kind: cand.kind,
         lowMc: b.lowMc, highMc: b.highMc,
         low: b.low, high: b.high,
-        start: b.start, idx: cand.idx
+        start: b.start, idx: cand.idx,
+        // fragile + konsentrasi saat level lahir — dibawa turun ke sinyal
+        // retest dan file export untuk backtest lanjutan.
+        fragile, concentrationRatio: conc
       },
       ev: {
         setupR: b.signedR != null ? b.signedR : b.R,
@@ -1297,7 +1340,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       if (cand) {
         const proof = verifyAbsorption(bars, cand);
         if (proof && proof.status === "confirmed") {
-          const ev = makeLevelEvent(cand, proof, bars);
+          const ev = makeLevelEvent(cand, proof, bars, base);
           evs.push(ev);
           levels.push(ev.level);
         }
@@ -1425,6 +1468,15 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     }));
   }
 
+  // Judul tampilan sinyal. Level RAPUH (whale tunggal) diberi tag di judul —
+  // murni tampilan; ev.signal (kunci riwayat/export) tetap nama kanoniknya.
+  function signalTitle(e) {
+    if (!e) return "";
+    const isLvl = e.signal === SIG_RESISTANCE || e.signal === SIG_SUPPORT;
+    if (isLvl && e.level && e.level.fragile) return e.signal + " (RAPUH — whale tunggal)";
+    return e.signal;
+  }
+
   function buildNarrative(c) {
     const e = c.ev, s = c.setup, lines = [];
     const isLevel = c.signal === SIG_RESISTANCE || c.signal === SIG_SUPPORT;
@@ -1440,6 +1492,10 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       lines.push(`terbentuk: ${fmtBar(s)} WIB`);
       lines.push(`penyerapan: R ${e.prevR != null ? e.prevR.toFixed(2) : "—"} → ${Math.abs(e.setupR).toFixed(2)} (${e.rMult.toFixed(1)}×) · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}%`);
       lines.push(`pembuktian: harga ${e.proofMove >= 0 ? "+" : ""}${e.proofMove.toFixed(1)}% ke titik terjauh dalam ${e.proofMoveBars} bar · R turun ke ${e.proofRAfter != null ? e.proofRAfter.toFixed(1) : "—"} · cumCVD ${e.proofCvd >= 0 ? "+" : ""}${e.proofCvd.toFixed(1)}`);
+      if (c.level && c.level.fragile) {
+        const pct = c.level.concentrationRatio != null ? Math.round(c.level.concentrationRatio * 100) : null;
+        lines.push(`⚠ RAPUH (whale tunggal): penyerapan ini didominasi satu wallet${pct != null ? " (" + pct + "% dari volume bar)" : ""} — level ini historisnya lebih sering tembus daripada bertahan saat di-retest.`);
+      }
       return lines.join("\n");
     }
 
@@ -1452,6 +1508,9 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       lines.push(`level asal: ${fmtTs(e.levelStart)} WIB · retest: ${fmtBar(s)} WIB`);
       lines.push(`R saat retest ${Math.abs(e.setupR).toFixed(2)} = ${e.rNorm.toFixed(2)}× acuan (${e.rBaseline.toFixed(1)}) → tidak ada perlawanan berarti`);
       lines.push(`cumCVD ${res ? "naik" : "turun"} · harga ${e.setupChg >= 0 ? "+" : ""}${e.setupChg.toFixed(2)}% · CVD ${e.setupCvd >= 0 ? "+" : ""}${Number(e.setupCvd).toFixed(1)} SOL`);
+      if (c.level && c.level.fragile) {
+        lines.push("⚠ Level ini dari awal sudah ditandai RAPUH (whale tunggal), jadi probabilitas tembus di retest ini secara historis lebih tinggi dari retest level biasa.");
+      }
       return lines.join("\n");
     }
 
@@ -1494,6 +1553,16 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     if (!prev) return true;                 // prev tak tersedia: jangan gugurkan
     const mult = rSpikeMult(prev, b);
     return mult != null && mult >= R_SPIKE_MULT;
+  }
+  // RAKSASA-grade = status "menyala penuh" (🔥) di R MONITOR: kandidat sinyal
+  // (isAbsorbGrade) DAN rasio ≥ R_BAND_BLAZE× acuan klaster. Inilah kelas
+  // penyerapan yang dipakai penanda RAPUH (v9.2.15) — bukan sekadar rasio
+  // besar, karena rasio besar bisa datang dari |R| kecil (tidak pernah jadi
+  // sinyal) atau dari lonjakan < 10× bar sebelumnya.
+  function isBlazeGrade(b, prev, base) {
+    if (!isAbsorbGrade(b, prev)) return false;
+    const r = rAbsOf(b);
+    return base != null && base > 1e-9 && r != null && (r / base) >= R_BAND_BLAZE;
   }
   function wallGlow(ratio, absorbGrade) {
     if (ratio == null || ratio < R_BAND_WALL) return 0;
@@ -1637,8 +1706,16 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     return { base, last, read, text };
   }
 
+  // Berapa bar yang digambar R MONITOR: jendela WAKTU (R_MON_WINDOW_SEC),
+  // dikonversi ke jumlah bar sesuai TF aktif, minimal 2 agar panel tetap
+  // tergambar, dan dibatasi R_MON_BARS sebagai pengaman.
+  function rMonWindowBars() {
+    const per = Math.max(1, Math.floor(R_MON_WINDOW_SEC / (BAR_SEC || 3600)));
+    return Math.max(2, Math.min(R_MON_BARS, per));
+  }
+
   function renderRMonitor(bars, container) {
-    const data = (bars || []).slice(-R_MON_BARS);
+    const data = (bars || []).slice(-rMonWindowBars());
     if (data.length < 2) {
       container.innerHTML = `<div class="gmgn-rm-empty">Butuh ≥2 candle. Jalankan Background Fetch.</div>`;
       return;
@@ -1652,7 +1729,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       head += `<span class="gmgn-rm-tag" style="background:${sum.read.color}22;color:${sum.read.textColor || sum.read.color};border-color:${(sum.read.textColor || sum.read.color)}66;">${esc(sum.read.label)}</span>`;
     }
     head += `<span class="gmgn-rm-sum">${esc(sum.text)}</span>`;
-    head += `<span class="gmgn-rm-base">acuan |R| ${base != null ? base.toFixed(1) : "—"}</span>`;
+    head += `<span class="gmgn-rm-base">acuan |R| ${base != null ? base.toFixed(1) : "—"} · ${R_MON_WINDOW_SEC / 3600} jam terakhir</span>`;
     head += `</div>`;
 
     // ---- grafik batang R ternormalisasi ----
@@ -1941,7 +2018,11 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       for (const e of scan.events) {
         const ev = e.ev || {};
         const mc = ev.lineMc != null ? fmtMarketCap(ev.lineMc) : "—";
-        L.push(`#   ${fmtTs(e.confirm.start)} WIB  ${e.signal}  garis_mc=${mc}`);
+        // Kolom per-level untuk backtest: status RAPUH + konsentrasi order saat
+        // level lahir (dari bar penyerapan). Retest membawa flag level asalnya.
+        const frag = e.level && e.level.fragile ? "TRUE" : "FALSE";
+        const concAt = e.level && e.level.concentrationRatio != null ? e.level.concentrationRatio.toFixed(3) : "";
+        L.push(`#   ${fmtTs(e.confirm.start)} WIB  ${e.signal}  garis_mc=${mc}  fragile=${frag}  concentration_ratio_at_formation=${concAt}`);
         for (const ln of (buildNarrative(e) || "").split("\n")) L.push("#     " + ln);
       }
     }
@@ -1951,7 +2032,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       L.push("# === STATUS RETEST ===");
       for (const lv of scan.levels) {
         const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
-        L.push(`#   ${lv.kind} ${line != null ? fmtMarketCap(line) : "—"} · armed=${lv.armed ? "ya" : "belum"}`);
+        L.push(`#   ${lv.kind} ${line != null ? fmtMarketCap(line) : "—"} · armed=${lv.armed ? "ya" : "belum"} · fragile=${lv.fragile ? "TRUE" : "FALSE"}`);
         L.push("#     " + retestDiagText(lv));
       }
       L.push("#");
@@ -1960,8 +2041,9 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     L.push(`# NOTE: LEVEL ENGINE. RESISTANCE/SUPPORT TERBENTUK = candle penyerapan (|R| >=${R_SPIKE_MULT}x bar sebelumnya DAN |R| >=${R_MIN_ABS}) yang TERBUKTI: dalam <=${LVL_CONFIRM_BARS} bar berikutnya R runtuh <=${LVL_R_DROP * 100}%, cumCVD dan harga bergerak >=${LVL_MIN_MOVE_PCT}% ke arah yang benar (harga diukur ke TITIK TERJAUH, bukan bar terakhir). Bukti dinilai MAJU bar per bar: begitu terbukti level tidak bisa dibatalkan penembusan yang datang belakangan; penembusan >${LVL_FAIL_PCT}% SEBELUM terbukti = GAGAL, tidak jadi level. GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dalam MARKET CAP. RETEST = harga kembali menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) dengan |R| <${LVL_RETEST_R_MAX}x acuan; retest resistance butuh cumCVD naik, retest support butuh cumCVD turun.`);
     L.push(`# NOTE: R MONITOR. R = |cvd_clean| / |chg_pct|, dinormalisasi ke r_baseline_median. r_state: BEBAS <${R_BAND_FREE}x, NORMAL, SERAP >=${R_BAND_ABSORB}x, TEMBOK_SELLER/TEMBOK_BUYER >=${R_BAND_WALL}x. Akhiran _RAKSASA hanya untuk candle yang lolos ambang sinyal (|R| >=${R_MIN_ABS} DAN lonjakan >=${R_SPIKE_MULT}x bar sebelumnya) sekaligus >=${R_BAND_BLAZE}x acuan; rasio besar tapi |R| kecil TIDAK dihitung raksasa karena tidak akan pernah jadi sinyal. +R = order SELL menahan, -R = order BUY menahan.`);
     L.push(`# NOTE: FORENSIK WICK. high/low hanya dari trade >=${HL_MIN_SOL} SOL. high_raw/low_raw = versi TANPA saringan itu; kalau berbeda jauh berarti ada trade debu di harga ekstrem (lihat dust_tx). Kolom max_trade_sol = trade terbesar di bar itu.`);
+    L.push(`# NOTE: KONSENTRASI ORDER (v9.2.15). concentration_ratio per bar = max_trade_sol / vol_sol = porsi volume bar dari wallet terbesar. fragile=TRUE pada level = penyerapan kelas RAKSASA (lolos ambang sinyal DAN >=${R_BAND_BLAZE}x acuan) dengan concentration_ratio >=${CONCENTRATION_FRAGILE_THRESHOLD} saat level lahir — didominasi satu wallet, historisnya lebih sering TEMBUS saat di-retest. Penanda ini METADATA (label/narasi/kolom export); syarat kelulusan level tidak berubah. Ambang ${CONCENTRATION_FRAGILE_THRESHOLD} masih AWAL, perlu kalibrasi backtest lanjutan.`);
     L.push("#");
-    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
+    L.push("bar_wib,cluster,close,close_mc_usd,low_mc_usd,high_mc_usd,chg_pct,R,r_ratio,r_state,cvd,cvd_clean,cum_cvd,high_raw_mc,low_raw_mc,dust_tx,max_trade_sol,concentration_ratio,wash_pct,tx,unique_makers,tagged_makers,fresh_wallets,fresh_wallet_pct,fresh_tx,fresh_buy_sol,fresh_sell_sol,buy_sol,sell_sol,vol_sol,partial");
 
     for (let bi = 0; bi < bars.length; bi++) {
       const b = bars[bi];
@@ -1982,6 +2064,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
         r.label.replace(/\s*🔥/g, "").trim().replace(/\s+/g, "_") + (r.blaze ? "_RAKSASA" : ""),
         b.cvd.toFixed(2), b.cvdClean.toFixed(2), b.cumCVD.toFixed(1),
         hRaw, lRaw, b.dustTx || "", b.maxTradeSol != null ? b.maxTradeSol.toFixed(3) : "",
+        b.concentrationRatio != null ? b.concentrationRatio.toFixed(3) : "",
         b.washPct.toFixed(1), b.txCount, b.uniqueMakers, b.taggedMakers,
         b.freshWallets, b.freshWalletPct.toFixed(1), b.freshTxCount,
         b.freshBuySol.toFixed(2), b.freshSellSol.toFixed(2),
@@ -2028,7 +2111,13 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
       const evs = scanAll.events.slice().reverse();
       const lvStatus = (scanAll.levels || []).slice().reverse().map(lv => {
         const line = lv.kind === "resistance" ? lv.highMc : lv.lowMc;
-        return { kind: lv.kind, line, txt: retestDiagText(lv), armed: !!lv.armed };
+        // Level RAPUH memakai warna MENYALA skema RAKSASA yang sudah ada
+        // (seller #ff3355 / buyer #00ff5e) — bukan skema warna baru.
+        const fragile = !!(lv.fragile);
+        const dot = fragile
+          ? wallTextColor(lv.kind === "resistance" ? "seller" : "buyer", 1, true)
+          : (lv.kind === "resistance" ? "#ef4444" : "#22c55e");
+        return { kind: lv.kind, line, txt: retestDiagText(lv), armed: !!lv.armed, fragile, dot };
       });
       const sig = evs.map(e => eventKey(e) + ":" + e.conf + ":" + (e.grade || "")).join("|")
         + "||" + lvStatus.map(x => x.txt).join("|");
@@ -2037,8 +2126,9 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
         const diagHtml = !lvStatus.length ? "" :
           `<div class="gmgn-diag-box"><div class="gmgn-diag-head">Status pemantauan retest</div>` +
           lvStatus.map(x =>
-            `<div class="gmgn-diag-row"><span class="gmgn-diag-dot" style="background:${x.kind === "resistance" ? "#ef4444" : "#22c55e"}"></span>` +
+            `<div class="gmgn-diag-row"><span class="gmgn-diag-dot" style="background:${x.dot}"></span>` +
             `<div><b>${x.kind === "resistance" ? "Resistance" : "Support"} ${fmtMarketCap(x.line)}</b>` +
+            (x.fragile ? `<span class="gmgn-diag-arm" style="color:${x.dot};font-weight:700;">RAPUH — whale tunggal</span>` : "") +
             `<span class="gmgn-diag-arm">${x.armed ? "siap" : "menunggu harga menjauh"}</span>` +
             `<div class="gmgn-diag-why">${esc(x.txt)}</div></div></div>`).join("") +
           `</div>`;
@@ -2049,7 +2139,11 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
             `<div class="gmgn-hist-head"><span>Sinyal & detail</span><span>Metric</span></div>` +
             evs.map(e => {
               const m = SIG_META[e.signal] || {};
-              const col = m.color || "#94a3b8";
+              const isLvlSig = e.signal === SIG_RESISTANCE || e.signal === SIG_SUPPORT;
+              // Aksen level RAPUH: reuse warna menyala RAKSASA (bukan skema baru).
+              const col = (isLvlSig && e.level && e.level.fragile)
+                ? wallTextColor(e.signal === SIG_RESISTANCE ? "seller" : "buyer", 1, true)
+                : (m.color || "#94a3b8");
               const key = eventKey(e);
               const open = openDetailKey === key;
               const mark = m.mark || "⚪";
@@ -2062,7 +2156,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
                 : `${fmtTs(e.setup.start)} · ${mcTxt} · R ${e.ev.rNorm.toFixed(2)}× acuan`;
               return `<div class="gmgn-hist-item${open ? " is-open" : ""}" data-key="${esc(key)}">
                 <div class="gmgn-hist-row">
-                  <span class="gmgn-hist-sig" style="color:${col};">${mark} ${e.signal}</span>
+                  <span class="gmgn-hist-sig" style="color:${col};">${mark} ${esc(signalTitle(e))}</span>
                   <span class="gmgn-hist-meta">${det}</span>
                   <span class="gmgn-hist-grade" style="color:${gc};" title="${esc((e.gradeLabel || "") + " · " + e.conf)}">${esc(e.grade || "—")}</span>
                 </div>
@@ -2269,7 +2363,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.14</span>
+        <span class="t">🥄 SMART SEROK v9.2.15</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2280,7 +2374,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
         <div class="gmgn-toolbar">
           <div class="gmgn-row">
             <button class="gmgn-btn-main gmgn-btn-start" id="gmgn-btn-bgfetch"><span>🌐 Background Fetch</span></button>
-            <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-live" title="Fetch otomatis 48 jam terakhir, tiap 15 menit"><span>📡 LIVE</span></button>
+            <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-live" title="Fetch otomatis 4 hari terakhir (tampilan R MONITOR tetap 24 jam), tiap 15 menit"><span>📡 LIVE</span></button>
             <button class="gmgn-btn-main gmgn-btn-start" id="gmgn-btn-scroll"><span>⚡ Auto-Scroll</span></button>
             <button class="gmgn-btn-main gmgn-btn-dl" id="gmgn-btn-dl" disabled title="Export CSV ringkas: bars + level/sinyal + jejak forensik wick (tanpa raw trades)">⬇ Export CSV</button>
             <button class="gmgn-btn-main gmgn-btn-mode" id="gmgn-btn-mode" title="Ganti antara R MONITOR (baca R murni) dan mode sinyal">📊 R MONITOR</button>
@@ -2317,6 +2411,7 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
           GARIS LEVEL = HIGH candle (resistance) atau LOW candle (support), dinyatakan dalam MARKET CAP. HIGH/LOW hanya dihitung dari trade ≥${HL_MIN_SOL} SOL supaya trade debu tidak menggeser garis.
           Penyerapan yang harganya justru menembus level &gt;${LVL_FAIL_PCT}% dianggap GAGAL: tidak jadi level dan tidak ditampilkan.
           🔵 RETEST RESISTANCE / 🟠 RETEST SUPPORT: harga balik menyentuh GARIS itu (toleransi ${LVL_LINE_PAD_PCT}%) tetapi |R| hanya &lt;${LVL_RETEST_R_MAX}× acuan — penjaga level tidak hadir lagi. Retest resistance butuh cumCVD naik (kemungkinan tembus ke atas); retest support butuh cumCVD turun (kemungkinan jebol ke bawah).
+          ⚠ RAPUH (WHALE TUNGGAL): level dari penyerapan RAKSASA yang didominasi satu wallet (concentration_ratio ≥ ${CONCENTRATION_FRAGILE_THRESHOLD} = max_trade_sol / vol_sol) ditandai "(RAPUH — whale tunggal)" dan diberi warna menyala — historisnya level seperti ini lebih sering tembus daripada bertahan saat di-retest. Penanda ini metadata saja, bukan filter: level tetap lahir dan tampil normal.
         </div>
       </div>
     </div>`;
@@ -2354,6 +2449,26 @@ const EXT_VER = "9.2.14";             // dipakai di header file export
     setTimeout(() => refreshHolderContext(true), 1200);
     setInterval(updateUI, 3000);
   }
+  // ── Hook suite regresi (tests/regression.js) ─────────────────────────────
+  // Hanya aktif saat content.js dijalankan oleh Node suite tes, yang mendefinisikan
+  // globalThis.__SMART_SEROK_TEST__ sebagai fungsi SEBELUM file ini dievaluasi.
+  // Di browser biasa simbol itu bukan fungsi, jadi blok ini tidak berefek apa pun
+  // dan tidak mengekspos apa pun ke halaman.
+  if (typeof globalThis.__SMART_SEROK_TEST__ === "function") {
+    globalThis.__SMART_SEROK_TEST__({
+      // engine murni
+      buildBars, scanSignals, absorptionAt, verifyAbsorption, makeLevelEvent,
+      isAbsorbGrade, isBlazeGrade, readR, rBaseline, rMonWindowBars,
+      signalTitle, buildNarrative, levelLine, touchesLine,
+      wallColor, wallTextColor, wallGlow,
+      // konstanta yang dijaga regresinya
+      R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD, LVL_CONFIRM_BARS, LVL_R_DROP,
+      LVL_MIN_MOVE_PCT, LVL_FAIL_PCT, LVL_RETEST_R_MAX, R_BAND_FREE,
+      R_BAND_ABSORB, R_BAND_WALL, R_BAND_BLAZE, HL_MIN_SOL,
+      CONCENTRATION_FRAGILE_THRESHOLD, R_MON_WINDOW_SEC, LIVE_FETCH_SEC
+    });
+  }
+
   function boot() { if (document.body) injectUI(); else document.addEventListener("DOMContentLoaded", injectUI); }
   boot();
 })();

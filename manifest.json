@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.14",
-  "description": "SMART SEROK v9.2.14 — satu tombol export; file ringkas (KB) berisi bars + level/sinyal + jejak forensik wick.",
+  "version": "9.2.15",
+  "description": "SMART SEROK v9.2.15 — penanda level RAPUH (whale tunggal) via konsentrasi order; LIVE memuat 4 hari, R MONITOR 24 jam terakhir.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
