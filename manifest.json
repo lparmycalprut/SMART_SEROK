@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.16",
-  "description": "SMART SEROK v9.2.16 — fetch rentang N hari penuh (walk bertahap anti-pemotongan API) + laporan jernih bila data API tidak menutup rentang; LIVE 4 hari, R MONITOR 24 jam terakhir.",
+  "version": "9.2.18",
+  "description": "SMART SEROK v9.2.18 — level engine: LEVEL INSTAN (R besar = level, validasi dihapus total; v9.2.17: retest dihapus, syarat gerak >=5% dihapus); fetch rentang N hari penuh (walk bertahap); LIVE 4 hari, R MONITOR 24 jam terakhir.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

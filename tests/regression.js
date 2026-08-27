@@ -9,7 +9,14 @@
  * (v9.2.12), tetapi file suite-nya belum pernah ikut ter-commit ke repo
  * (riwayat git ter-squash). Suite lama DIREKONSTRUKSI di sini dari deskripsi
  * README v9.2.11/v9.2.12 supaya bisa terus dijalankan, lalu ditambah tes baru
- * v9.2.15 (6) dan v9.2.16 (11 — fetch walk). Total: 34 tes.
+ * v9.2.15 (6) dan v9.2.16 (11 — fetch walk).
+ *
+ * v9.2.17/v9.2.18: validasi level (LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS,
+ * LVL_R_DROP, LVL_FAIL_PCT, LVL_MIN_MOVE_PCT, verifyAbsorption) dan sinyal
+ * RETEST DIHAPUS dari content.js. Sesuai README v9.2.18: tes 07/08 (verifyAbsorption)
+ * DIHAPUS, tes 19/20 dibersihkan dari klausa retest, tes 23 dilepas dari konstanta
+ * yang sudah mati, lalu ditambahkan tes 35-38. Total: 36 tes
+ * (21 warisan + 11 fetch walk + 4 level instan).
  *
  * content.js adalah content script browser (IIFE, tanpa export). Suite ini
  * menjalankan file itu di sandbox Node; content.js memanggil hook
@@ -81,9 +88,10 @@ function bgBar(bar, event, totalSol, openP, closeP, makers) {
 
 /**
  * Skenario level lengkap: 8 bar latar (R = baseR) -> bar penyerapan (+34 SOL,
- * chg ~0.62% -> R ~55) -> 2 bar bukti (harga -11%, R runtuh, cumCVD turun)
- * -> 1 bar menjauh -> 1 bar retest (balik menyentuh garis HIGH, R normal,
- * cumCVD naik). Retest mungkin muncul tergantung parameter.
+ * chg ~0.62% -> R ~55) -> 2 bar harga menjauh (R runtuh, cumCVD turun)
+ * -> 1 bar menjauh -> 1 bar harga KEMBALI menyentuh garis HIGH, R normal.
+ * Sejak v9.2.17 bar terakhir itu TIDAK boleh melahirkan sinyal lagi (RETEST
+ * dihapus), dan sejak v9.2.18 level sudah lahir di bar 8 tanpa menunggu.
  *
  * Opsi:
  *   whale : true  -> 30 SOL dari SATU wallet (concentration ~0.88)
@@ -173,7 +181,8 @@ const scanWhale = api.scanSignals(barsWhale);
 const scanDist  = api.scanSignals(barsDist);
 const scanCalm  = api.scanSignals(barsCalm);
 const lvlEvent = (scan) => (scan.events || []).find(e => e.signal.indexOf("TERBENTUK") >= 0) || null;
-const retestEvent = (scan) => (scan.events || []).find(e => e.signal.indexOf("RETEST") >= 0) || null;
+// v9.2.17: sinyal RETEST dihapus — helper retestEvent ikut dicabut. Nama "RETEST"
+// dijaga agar tidak muncul lagi oleh tes 36.
 
 // ══ REGRESI LAMA — direkonstruksi dari README v9.2.11 (9 tes) ═══════════════
 
@@ -234,25 +243,6 @@ test("06 readR: status RAKSASA (🔥) hanya bila grade DAN rasio >= R_BAND_BLAZE
   // grade tapi rasio < 12x -> tembok biasa
   const mid = api.readR({ priceChgPct: 1, cvdClean: 55, R: 55, signedR: 55 }, 10, { R: 1.5 });
   ok(!mid.blaze, "grade tanpa rasio 12x tidak menyala");
-});
-
-test("07 verifyAbsorption: bukti dinilai MAJU — penembusan setelah bukti tidak membatalkan (Plumber 21 Agu)", () => {
-  // Skenario whale + 1 bar tambahan yang menutup DI ATAS garis (+5%).
-  const trades = scenarioTrades({ whale: true, baseR: 1.5 });
-  trades.push(T(13, 600, "p1", "buy", 3, 112), T(13, 2400, "p2", "buy", 3, 114.5));
-  const bars = api.buildBars(trades, NOW_MS);
-  const proof = api.verifyAbsorption(bars, api.absorptionAt(bars, 8));
-  eq(proof.status, "confirmed", "bukti lengkap duluan -> CONFIRMED, pantulan belakangan tidak membatalkan");
-});
-
-test("08 verifyAbsorption: tembus > LVL_FAIL_PCT sebelum bukti -> GAGAL", () => {
-  const trades = scenarioTrades({ whale: true, baseR: 1.5 }).filter(t => t.ts < B + 9 * H);
-  // bar 9-10 diganti: harga MALAH naik menembus garis (close > high*1.02 = 111.13)
-  trades.push(T(9, 600, "p1", "buy", 5, 110), T(9, 2400, "p2", "buy", 5, 113));
-  trades.push(T(10, 600, "p3", "buy", 5, 114), T(10, 2400, "p4", "buy", 5, 116));
-  const bars = api.buildBars(trades, NOW_MS);
-  const proof = api.verifyAbsorption(bars, api.absorptionAt(bars, 8));
-  eq(proof.status, "failed", "tembus sebelum terbukti -> gagal, tidak jadi level");
 });
 
 test("09 buildBars: HIGH/LOW kebal trade debu, high_raw tetap mencatat (BABYSHIB 20 Agu 01:00)", () => {
@@ -353,10 +343,9 @@ test("19 level RAKSASA-grade + konsentrasi tinggi -> fragile=TRUE + tag judul + 
   const nar = api.buildNarrative(ev);
   ok(nar.indexOf("didominasi satu wallet") >= 0 && nar.indexOf("88% dari volume bar") >= 0,
      "narasi memuat kalimat whale tunggal + persentase");
-  // retest level rapuh juga membawa penanda di narasi
-  const rt = retestEvent(scanWhale);
-  ok(rt, "skenario whale juga memicu retest");
-  ok(api.buildNarrative(rt).indexOf("RAPUH") >= 0, "narasi retest memuat penanda RAPUH");
+  // v9.2.17: tidak ada sinyal retest lagi — harga yang balik menyentuh garis
+  // (bar 12) tidak menambah event, tapi level rapuh tetap membawa penandanya.
+  eq(scanWhale.events.length, 1, "satu candle penyerapan = satu sinyal, tanpa retest");
 });
 
 test("20 level RAKSASA-grade tapi konsentrasi rendah -> fragile=FALSE", () => {
@@ -365,8 +354,7 @@ test("20 level RAKSASA-grade tapi konsentrasi rendah -> fragile=FALSE", () => {
   eq(ev.level.fragile, false, "conc 0.09 < 0.6 -> tidak rapuh walaupun RAKSASA");
   eq(api.signalTitle(ev), ev.signal, "judul tanpa tag");
   ok(api.buildNarrative(ev).indexOf("RAPUH") < 0, "narasi tanpa penanda RAPUH");
-  const rt = retestEvent(scanDist);
-  ok(rt && api.buildNarrative(rt).indexOf("RAPUH") < 0, "narasi retest juga tanpa RAPUH");
+  eq(scanDist.events.length, 1, "skenario terdistribusi: satu sinyal, tanpa retest");
 });
 
 test("21 level BUKAN RAKSASA-grade -> fragile selalu FALSE meski konsentrasi tinggi", () => {
@@ -390,21 +378,17 @@ test("22 export CSV: kolom concentration_ratio di BARS + fragile/concentration d
      "baris LEVEL & SINYAL memuat field fragile + concentration_ratio_at_formation");
 });
 
-test("23 konstanta v9.2.15: ambang rapuh 0.6, LIVE 4 hari, R MONITOR 24 jam; threshold lama tak berubah", () => {
+test("23 konstanta: ambang rapuh 0.6, LIVE 4 hari, R MONITOR 24 jam, ambang deteksi tak bergeser", () => {
   eq(api.CONCENTRATION_FRAGILE_THRESHOLD, 0.6, "ambang awal konsentrasi");
   eq(api.LIVE_FETCH_SEC, 4 * 24 * 3600, "fetch awal LIVE = 4 hari");
   eq(api.R_MON_WINDOW_SEC, 24 * 3600, "jendela R MONITOR = 24 jam");
   eq(api.rMonWindowBars(), 24, "TF 1H -> 24 candle terakhir");
-  // pengaman: tidak ada threshold deteksi level yang bergeser
+  // pengaman: ambang DETEKSI penyerapan tidak boleh bergeser
   eq(api.R_SPIKE_MULT, 10);
   eq(api.R_MIN_ABS, 50);
   eq(api.ABSORB_MIN_CVD, 3);
-  eq(api.LVL_CONFIRM_BARS, 12);
-  eq(api.LVL_R_DROP, 0.5);
-  eq(api.LVL_MIN_MOVE_PCT, 5);
-  eq(api.LVL_FAIL_PCT, 2);
-  eq(api.LVL_RETEST_R_MAX, 1.5);
   eq(api.HL_MIN_SOL, 0.001);
+  // (validasi level & retest yang DIHAPUS dijaga oleh tes 35)
 });
 
 // ══ REGRESI BARU — v9.2.16 fetch walk / walkTradeRange (11 tes) ═════════════
@@ -588,6 +572,99 @@ test("34 tradeTsOf: normalisasi detik/milidetik & input tidak valid", () => {
   eq(api.tradeTsOf(null), 0, "null -> 0");
 });
 
+// ══ REGRESI BARU — v9.2.17 + v9.2.18: LEVEL INSTAN, validasi dihapus (2 tes) ══
+// Penjaga dua penghapusan terbesar di level engine. Kalau salah satu syarat lama
+// "balik" (masa tunggu, R runtuh, arah cumCVD, gerak >=5%, pembatalan penembusan),
+// tes di bawah ini yang menjerit.
+
+test("35 RETEST & validasi level DIHAPUS: helper/konstanta tidak di-export lagi", () => {
+  // (a) hanya dua konstanta nama sinyal yang dikenal mesin
+  const names = SRC.match(/^\s*const SIG_[A-Z]+ = "[^"]+";/gm).map(x => x.trim());
+  eq(names.length, 2, "tepat dua nama sinyal: " + JSON.stringify(names));
+  ok(names.indexOf('const SIG_RESISTANCE = "RESISTANCE TERBENTUK";') >= 0, "resistance utuh");
+  ok(names.indexOf('const SIG_SUPPORT = "SUPPORT TERBENTUK";') >= 0, "support utuh");
+  // (b) konstanta retest (v9.2.17) dan validasi level (v9.2.18) harus hilang
+  //     dari export MAUPUN dari sumber. Kalau salah satu kembali, berarti
+  //     "masa tunggu pembuktian" ikut balik.
+  for (const gone of ["LVL_CONFIRM_BARS", "LVL_MIN_CONFIRM_BARS", "LVL_R_DROP",
+                      "LVL_FAIL_PCT", "LVL_MIN_MOVE_PCT", "LVL_RETEST_R_MAX",
+                      "LVL_RETEST_MIN_GAP", "LVL_LINE_PAD_PCT"]) {
+    eq(api[gone], undefined, gone + " tidak boleh di-export lagi");
+    ok(SRC.indexOf(gone) < 0, gone + " tidak boleh ada di content.js");
+  }
+  ok(SRC.indexOf("verifyAbsorption") < 0, "verifyAbsorption() harus hilang permanen");
+  // (c) bar yang dulu memicu retest (harga balik menyentuh garis) kini diam:
+  //     satu candle penyerapan = satu event, tanpa sinyal susulan
+  for (const [tag, scan] of [["whale", scanWhale], ["dist", scanDist], ["calm", scanCalm]]) {
+    eq(scan.events.length, 1, tag + ": tepat satu event, tanpa retest");
+    for (const e of scan.events) ok(e.signal.indexOf("RETEST") < 0, tag + ": sinyal retest masih muncul");
+    eq(scan.pending, null, tag + ": pending harus selalu null (masa tunggu dihapus)");
+  }
+  eq(api.scanSignals.length, 1, "scanSignals(bars) — tanpa parameter jendela bukti");
+});
+
+test("36 LEVEL INSTAN: lahir di bar penyerapan walau TIDAK ada bar sesudahnya", () => {
+  // Mesin lama menuntut jendela bukti sesudahnya; sekarang cukup candle-nya.
+  const ev = lvlEvent(scanWhale);
+  ok(ev, "candle penyerapan harus LANGSUNG menjadi level");
+  eq(ev.setupIdx, 8, "setup = bar penyerapan");
+  eq(ev.confirmIdx, 8, "LEVEL INSTAN: dikonfirmasi di bar yang sama — tanpa tunggu");
+  eq(ev.confirm, ev.setup, "bar yang sama dipakai sebagai setup dan konfirmasi");
+  eq(scanWhale.pending, null, "tidak ada kandidat tertunda");
+  // Tanpa satu bar pun sesudahnya level tetap ada.
+  const onlyBar8 = api.buildBars(
+    scenarioTrades({ whale: true, baseR: 1.5 }).filter(t => t.ts < B + 9 * H), NOW_MS);
+  eq(api.scanSignals(onlyBar8).events.length, 1, "level tidak menunggu bar berikutnya");
+  // dan tanpa pergerakan harga >=5% sesudahnya (v9.2.17: LVL_MIN_MOVE_PCT dihapus)
+  const flat = scenarioTrades({ whale: true, baseR: 1.5 }).filter(t => t.ts < B + 9 * H);
+  flat.push(...bgBar(9,  "buy", 1.0, 109.0, 109.4));
+  flat.push(...bgBar(10, "buy", 1.0, 109.4, 109.8));
+  flat.push(...bgBar(11, "buy", 1.0, 109.8, 110.2));
+  const barsFlat = api.buildBars(flat, NOW_MS);
+  const movePct = (barsFlat[11].close / barsFlat[8].close - 1) * 100;
+  ok(Math.abs(movePct) < 5, "skenario memang <5% (movePct=" + movePct.toFixed(2) + "%)");
+  eq(api.scanSignals(barsFlat).events.length, 1,
+     "level tetap lahir walau harga nyaris tidak bergerak");
+});
+
+test("37 level TIDAK dibatalkan penembusan harga (tidak ada 'penyerapan gagal')", () => {
+  // Dulu (<=v9.2.16) harga yang menutup >2% melewati garis sebelum bukti
+  // membuat penyerapan dinilai GAGAL dan level dibatalkan. Sekarang tidak ada
+  // pembatalan: level tetap lahir dan tetap dilaporkan.
+  const trades = scenarioTrades({ whale: true, baseR: 1.5 }).filter(t => t.ts < B + 9 * H);
+  trades.push(T(9, 600, "p1", "buy", 5, 110), T(9, 2400, "p2", "buy", 5, 113));
+  trades.push(T(10, 600, "p3", "buy", 5, 114), T(10, 2400, "p4", "buy", 5, 116));
+  const scan = api.scanSignals(api.buildBars(trades, NOW_MS));
+  eq(scan.events.length, 1, "tembus +3~6% melewati garis TIDAK membatalkan level");
+  eq(scan.events[0].signal, "RESISTANCE TERBENTUK", "level tetap jadi sinyal aktif");
+  eq(scan.events[0].confirmIdx, 8, "tetap lahir di bar penyerapan, bukan gugur di bar 9-10");
+});
+
+test("38 tanpa R besar tidak ada level: |R| <50 atau lonjakan <10x -> nol sinyal", () => {
+  // (a) lonjakan 20x tapi |R| = 40 < lantai 50  -> bukan penyerapan
+  const soft = api.buildBars([
+    ...bgBar(0, "buy", 0.30, 100, 100.15),        // R0 = 0.30/0.15 = 2
+    ...bgBar(1, "buy", 3.40, 100.15, 100.2351),   // R1 = 3.40/0.085 = 40
+  ], NOW_MS);
+  eq(api.absorptionAt(soft, 1), null, "|R| di bawah R_MIN_ABS ditolak");
+  eq(api.scanSignals(soft).events.length, 0, "tidak ada level tanpa |R| >=50");
+  // (b) |R| = 60 (lolos lantai) tapi lonjakan cuma 6x (<10x) -> bukan penyerapan
+  const small = api.buildBars([
+    ...bgBar(0, "buy", 1.00, 100, 100.10),         // R0 = 1.00/0.10  = 10
+    ...bgBar(1, "buy", 3.40, 100.10, 100.15672),   // R1 = 3.40/0.0567 = 60 (>=50, tapi 6x <10x)
+  ], NOW_MS);
+  eq(api.absorptionAt(small, 1), null, "lonjakan <10x bar sebelumnya ditolak");
+  eq(api.scanSignals(small).events.length, 0, "tidak ada level tanpa lonjakan >=10x");
+  // (c) lonjakan dan |R| cukup tapi effort < 3 SOL -> tetap ditolak (lantai effort)
+  const thin = api.buildBars([
+    ...bgBar(0, "buy", 0.30, 100, 100.15),
+    ...bgBar(1, "buy", 2.00, 100.15, 100.16),     // R1 = 2.00/0.01 = 200, effort 2 SOL
+  ], NOW_MS);
+  eq(api.absorptionAt(thin, 1), null, "effort di bawah ABSORB_MIN_CVD ditolak");
+  eq(api.scanSignals(thin).events.length, 0, "R besar semu dari bar tipis tidak jadi level");
+});
+
+
 // ── Jalankan & laporkan ─────────────────────────────────────────────────────
 (async () => {
   await runTests();
@@ -597,6 +674,6 @@ test("34 tradeTsOf: normalisasi detik/milidetik & input tidak valid", () => {
     else console.log("  GAGAL  " + name + "\n         -> " + err);
   }
   console.log("");
-  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (23 lama + ${results.length - 23} baru).`);
+  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (21 warisan + ${results.length - 21} baru: 11 fetch walk + 4 level instan).`);
   else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }
 })();
