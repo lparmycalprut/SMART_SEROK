@@ -343,3 +343,38 @@ tampilan -0,04% pada data lama):
    bar bisa tampak datar.
 3. Zona waktu — label ekstensi selalu WIB (Asia/Jakarta); GMGN mengikuti timezone
    browser. Kalau browser bukan WIB, "jam 23" di chart GMGN ≠ "jam 23" di ekstensi.
+
+
+## 2026-08-29 — LIVE "❌ gagal · +0 TX": from per request dibatasi + fallback URL (v9.2.20)
+
+**Masalah:** laporan user — status LIVE berhenti di `LIVE ❌ gagal · +0 TX · next
+09.08`. Belum ada data tersimpan (`+0 TX`), berarti request pertama
+`walkTradeRange` gagal (bukan sekadar tidak ada trade baru).
+
+**Akar masalah (2):**
+
+1. `walkTradeRange` selalu mengirim `from=startTs` (4 hari lalu untuk LIVE awal) ke
+   SETIAP request. Perilaku API GMGN yang sudah tercatat sejak v9.2.16: `from` yang
+   jauh di belakang `to` dipotong; pada request tertentu (jendela 4 hari, `limit=200`,
+   `event=buy&event=sell`) response bisa `code != 0`, sehingga walk berhenti di
+   halaman 0 dan LIVE lapor gagal.
+2. `gmgnRequest` hanya mencoba SATU format URL (`limit=200`, dengan dua filter
+   `event=`), lalu menyerah. Tidak ada fallback page size / filter dan tidak ada
+   penyebab kegagalan di status — user harus buka console.
+
+**Keputusan:**
+
+- `walkTradeRange` kini membatasi `from` per request menjadi
+  `max(startTs, to - API_FROM_WINDOW_SEC)` dengan `API_FROM_WINDOW_SEC = 24 jam`.
+  Loop yang memundurkan `coveredTo` TETAP menutup rentang penuh (4 hari) dalam
+  jendela-jendela 1 hari, jadi tidak ada trade yang hilang dan alasan v9.2.16
+  (from dipotong ~1 hari) tidak lagi menghancurkan request.
+- `gmgnRequest` mencoba urutan variant: default → `limit=100` → `limit=50` →
+  `tanpa filter event + limit=50`. Default tetap 3 retry jaringan; fallback 1x.
+- Penyebab kegagalan terakhir disimpan di `lastRequestError` dan ditampilkan di
+  status LIVE (`LIVE ❌ code=... / HTTP ... · +N TX · next ...`), panjangnya dipotong.
+- **Tidak ada ambang sinyal yang diubah** — murni keandalan pengambilan data.
+
+**Tes:** +2 tes — 41 (API yang MENOLAK from jauh tetap menutup 4 hari, jadi walk
+tidak lagi gagal di halaman 0) dan 42 (helper URL fallback limit/event).
+Suite regresi kini 40 tes dan LULUS semua.

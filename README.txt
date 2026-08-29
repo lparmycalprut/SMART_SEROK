@@ -1,8 +1,31 @@
-SMART SEROK v9.2.19 — LEVEL ENGINE
+SMART SEROK v9.2.20 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
+
+PERUBAHAN (v9.2.20)
+-------------------
+LIVE TIDAK LAGI "❌ GAGAL · +0 TX"
+Kasus nyata: status LIVE berhenti di "LIVE ❌ gagal · +0 TX · next 09.08".
+Dua penyebab di sisi pengambilan data yang sekarang diperbaiki:
+
+1. walkTradeRange lama mengirim `from=startTs` (4 hari lalu) ke SETIAP
+   request token_trades. API GMGN memotong `from` yang jauh di belakang
+   `to` (fakta yang sudah dipakai sebagai asumsi v9.2.16) — dan pada
+   kasus tertentu menolak request itu dengan code != 0, sehingga halaman
+   pertama langsung failed dan LIVE +0 TX.
+   Perbaikan: `from` per request sekarang dibatasi `to - 24 jam`.
+   Loop yang memundurkan `coveredTo` tetap menjalani rentang penuh
+   (4 hari) dalam jendela-jendela 1 hari, jadi data lama tetap tertutup.
+
+2. gmgnRequest hanya memakai satu format URL dan menyerah bila code != 0.
+   Perbaikan: fallback berurutan `limit=200 → 100 → 50 → tanpa event
+   + limit=50`. Kalau semua gagal, penyebabnya (code/HTTP/ERR) sekarang
+   ditampilkan langsung di status LIVE, bukan cuma di console.
+
+TIDAK ADA ambang sinyal yang diubah — ini murni perbaikan keandalan
+pengambilan data LIVE/Background Fetch.
 
 PERUBAHAN (v9.2.19)
 -------------------

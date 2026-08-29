@@ -16,8 +16,10 @@
  * RETEST DIHAPUS dari content.js. Sesuai README v9.2.18: tes 07/08 (verifyAbsorption)
  * DIHAPUS, tes 19/20 dibersihkan dari klausa retest, tes 23 dilepas dari konstanta
  * yang sudah mati, lalu ditambahkan tes 35-38. v9.2.19: +tes 39-40
- * (open/close bebas trade debu). Total: 38 tes
- * (21 warisan + 11 fetch walk + 6 terbaru: 4 level instan + 2 open/close debu).
+ * (open/close bebas trade debu). v9.2.20: +tes 41-42 (LIVE tidak gagal 0 TX).
+ * Total: 40 tes
+ * (21 warisan + 11 fetch walk + 8 terbaru: 4 level instan + 2 open/close debu
+ * + 2 keandalan request LIVE).
  *
  * content.js adalah content script browser (IIFE, tanpa export). Suite ini
  * menjalankan file itu di sandbox Node; content.js memanggil hook
@@ -726,6 +728,57 @@ test("40 open/close debu di AWAL bar, bar seluruhnya debu (fallback), dan kolom 
 });
 
 
+// ══ REGRESI BARU — v9.2.20: LIVE tidak gagal 0 TX (2 tes) ═══════════════════
+// Kasus: LIVE berhenti di "❌ gagal · +0 TX". Akar yang diatasi: (a) request
+// mengirim from=startTs (4 hari lalu) ke `to` sekarang, padahal API menolak
+// from yang jauh di belakang `to`; (b) gmgnRequest tidak mencoba format URL
+// lain. Tes 41 mensimulasikan API yang MENOLAK from jauh, tes 42 memeriksa
+// helper URL fallback.
+
+test("41 walk v9.2.20: from per request dibatasi 1 hari — API yang MENOLAK from jauh tetap menutup 4 hari", async () => {
+  const D = 86400, W = api.API_FROM_WINDOW_SEC;
+  const trades = [];
+  let id = 0;
+  for (let d = 4; d >= 1; d--) {
+    const dayStart = NOW_WALK - d * D;
+    for (let k = 0; k < 50; k++) {
+      const ts = dayStart + Math.floor((k + 0.5) * D / 50);
+      trades.push({ ts, tx_hash: "v" + (++id), event: k % 2 ? "buy" : "sell", maker: "m" + (id % 5), timestamp: ts });
+    }
+  }
+  const startTs = NOW_WALK - 4 * D, endTs = NOW_WALK;
+  let rejected = 0, accepted = 0;
+  const strictReject = (url) => {
+    const u = new URL(url, "https://gmgn.ai");
+    const from = parseInt(u.searchParams.get("from"), 10);
+    const to = parseInt(u.searchParams.get("to"), 10);
+    if (from < to - W) { rejected++; return Promise.resolve(null); }   // API lama v9.2.19: tolak
+    accepted++;
+    const history = trades.filter(t => t.ts <= to && t.ts >= from).slice(0, 200);
+    return Promise.resolve({ code: 0, data: { history, next: null } });
+  };
+  const r = await doWalk({ request: strictReject }, startTs, endTs, { maxPages: 80 });
+  eq(rejected, 0, "tidak ada request dengan from >1 hari di belakang to (rejected=" + rejected + ")");
+  ok(accepted > 0, "ada request yang diterima (" + accepted + ")");
+  eq(r.total, trades.length, "seluruh 4 hari (200 tx) terkumpul");
+  ok(r.rangeWalked, "rentang dijelajahi penuh");
+  ok(!r.failed && !r.capped, "tanpa gagal / batas halaman");
+});
+
+test("42 request fallback v9.2.20: helper URL mengubah limit dan menghapus event", () => {
+  eq(api.API_FROM_WINDOW_SEC, 24 * 3600, "jendela from per request = 24 jam");
+  const base = "https://gmgn.ai/vas/api/v1/token_trades/sol/TEST?event=buy&event=sell&limit=200&from=1&to=2";
+  const l50 = api.reqUrlWithLimit(base, 50);
+  ok(l50.indexOf("limit=50") >= 0, "limit diganti 50");
+  ok(l50.indexOf("event=buy") >= 0, "event tetap ada (fallback limit bukan fallback event)");
+  const noEv = api.reqUrlNoEvent(base);
+  ok(noEv.indexOf("event=") < 0, "semua event query dihapus");
+  ok(noEv.indexOf("limit=200") >= 0, "limit tetap ada saat event dihapus");
+  eq(api.reqUrlWithLimit(noEv, 50).indexOf("limit=50") >= 0, true, "limit 50 + tanpa event jadi satu");
+  ok(typeof api.gmgnRequest === "function", "gmgnRequest diexpose untuk pengujian");
+});
+
+
 // ── Jalankan & laporkan ─────────────────────────────────────────────────────
 (async () => {
   await runTests();
@@ -735,6 +788,6 @@ test("40 open/close debu di AWAL bar, bar seluruhnya debu (fallback), dan kolom 
     else console.log("  GAGAL  " + name + "\n         -> " + err);
   }
   console.log("");
-  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (21 warisan + 11 fetch walk + 4 level instan + 2 open/close debu).`);
+  if (pass === results.length) console.log(`${pass}/${results.length} LULUS — regresi penuh lolos (21 warisan + 11 fetch walk + 4 level instan + 2 open/close debu + 2 keandalan request LIVE).`);
   else { console.log(`${pass}/${results.length} LULUS — ada yang GAGAL.`); process.exit(1); }
 })();
