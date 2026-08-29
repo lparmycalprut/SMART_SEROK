@@ -1,82 +1,127 @@
-SMART SEROK v9.2.20 — LEVEL ENGINE
+SMART SEROK v9.3.0 — GMGN AGENT API + DETEKSI AKUMULASI/DISTRIBUSI
+==================================================================
+Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
+Setelah update, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R).
+
+File ekstensi: manifest.json, bridge.js, content.js, README.txt, icon16/48/128.png.
+bridge.js WAJIB ada satu folder dengan content.js — ia jembatan API ke GMGN.
+
+YANG BARU DI v9.3.0
+-------------------
+1. GMGN AGENT API (OpenAPI)
+   - Key bawaan sudah TERTANAM di ekstensi (dipakai otomatis, tidak perlu input).
+   - Punya key sendiri? Tempel di kolom "GMGN API Key" pada panel lalu klik
+     "Simpan Key" — tersimpan lokal (autosave), tidak perlu isi ulang. Tombol
+     "Default" mengembalikan ke key bawaan.
+   - Tombol "🧠 Smart Tags": menarik daftar wallet SMART MONEY & KOL resmi
+     GMGN (openapi.gmgn.ai) lalu menandai trade mereka di data Anda.
+   - Tombol "🛡 Token API": menampilkan info + status keamanan token (honeypot,
+     renounce, mint, LP burn, sniper/bundle/top10, pajak).
+   - Hanya endpoint DATA yang dipakai. Swap/order TIDAK disentuh (butuh private
+     key dan tanda tangan — SMART SEROK murni alat baca).
+
+2. DETEKSI AKUMULASI / DISTRIBUSI (AKD) — dari CVD
+   Tiga pola di sisi akumulasi (dan cerminnya di distribusi):
+   a. ABSORPSI JUAL DI SUPPORT: CVD turun TAJAM tapi harga TIDAK bisa jatuh —
+      ritel panik jual market, whale menampung pasif (limit buy). Pasokan habis
+      diserap di area support. Cermin: ABSORPSI BELI DI RESISTANCE (distribusi —
+      whale membuang pasif ke ritel FOMO).
+   b. BELI BERTAHAP SAAT FLAT: harga di rentang sempit (≤4%) tapi CVD merangkak
+      NAIK konsisten (≥55% candle net beli) — whale mencicil market kecil sambil
+      menahan harga (wall sendiri) agar ritel tidak FOMO. Cermin: JUAL BERTAHAP.
+   c. BULLISH DIVERGENCE: harga lower-low tapi tekanan CVD antar swing MEMBAIK
+      (penjual agresif kehabisan) — potensi reversal naik. Cermin: BEARISH
+      DIVERGENCE (higher-high tapi CVD melemah).
+   Sinyal AKD TIDAK kedaluwarsa — fase akumulasi bisa berlangsung berhari-hari.
+   Konfirmasi tambahan untuk futures: Open Interest naik saat harga flat + CVD
+   ekstrem (OI tidak tersedia untuk spot meme on-chain).
+
+MESIN LAMA TETAP JALAN
+----------------------
+LEVEL ENGINE (RESISTANCE/SUPPORT TERBENTUK, RETEST) dan R MONITOR dari v9.2.x
+tidak diubah. AKD adalah lapisan tambahan: ia membaca AKTIVITAS SENYAP lintas
+6–18 candle, sedangkan LEVEL ENGINE membaca SATU candle penyerapan raksasa.
+
+==================================================================
+SMART SEROK v9.2.11 — LEVEL ENGINE
 =================================
 Load unpacked: Chrome → chrome://extensions → Developer mode → Load unpacked.
 Setelah update ekstensi, klik Reload lalu hard-refresh tab GMGN (Ctrl+Shift+R) agar
 script versi lama yang masih menempel di halaman benar-benar diganti.
 
-PERUBAHAN (v9.2.20)
--------------------
-LIVE TIDAK LAGI "❌ GAGAL · +0 TX"
-Kasus nyata: status LIVE berhenti di "LIVE ❌ gagal · +0 TX · next 09.08".
-Dua penyebab di sisi pengambilan data yang sekarang diperbaiki:
-
-1. walkTradeRange lama mengirim `from=startTs` (4 hari lalu) ke SETIAP
-   request token_trades. API GMGN memotong `from` yang jauh di belakang
-   `to` (fakta yang sudah dipakai sebagai asumsi v9.2.16) — dan pada
-   kasus tertentu menolak request itu dengan code != 0, sehingga halaman
-   pertama langsung failed dan LIVE +0 TX.
-   Perbaikan: `from` per request sekarang dibatasi `to - 24 jam`.
-   Loop yang memundurkan `coveredTo` tetap menjalani rentang penuh
-   (4 hari) dalam jendela-jendela 1 hari, jadi data lama tetap tertutup.
-
-2. gmgnRequest hanya memakai satu format URL dan menyerah bila code != 0.
-   Perbaikan: fallback berurutan `limit=200 → 100 → 50 → tanpa event
-   + limit=50`. Kalau semua gagal, penyebabnya (code/HTTP/ERR) sekarang
-   ditampilkan langsung di status LIVE, bukan cuma di console.
-
-TIDAK ADA ambang sinyal yang diubah — ini murni perbaikan keandalan
-pengambilan data LIVE/Background Fetch.
-
-PERUBAHAN (v9.2.19)
--------------------
-OPEN/CLOSE DIBERSIHKAN DARI TRADE DEBU
-Kasus nyata 27 Agustus jam 23:00 WIB: harga asli bar bergerak +3%
-(100,2 → 103,3), tapi R MONITOR menampilkan harga -0,04% — dan R meledak
-menjadi TEMBOK (225× acuan). Sumber masalahnya SATU trade debu (0,0000 SOL)
-di ujung bar di harga 100,16: ia menjadi "close" bar. OPEN/CLOSE dulu
-memakai SELURUH trade, padahal HIGH/LOW sudah disaring sejak v9.2.5.
-Perbaikan: open/close kini dihitung hanya dari trade ≥ HL_MIN_SOL
-(0,001 SOL) — fallback ke semua trade bila isi bar seluruhnya debu, supaya
-tidak ada bar tanpa harga. Versi mentah (openRaw/closeRaw) tetap disimpan
-dan diekspor sebagai kolom open_raw/close_raw di bagian BARS (dikosongkan
-bila sama dengan yang dipakai), mengikuti pola high_raw_mc/low_raw_mc.
-TIDAK ADA ambang sinyal yang diubah — ini murni membersihkan input
-chg_pct/R yang selama ini bisa dipalsukan oleh satu trade debu.
-
-PERUBAHAN BESAR (v9.2.17 — v9.2.18)
------------------------------------
+PERUBAHAN BESAR
+---------------
 Semua sinyal lama DIHAPUS (WASPADA DUMP, SIAP2 PUMP, SERAP SELL, BATTLE TERJADI).
-Sinyal RETEST RESISTANCE / RETEST SUPPORT juga DIHAPUS di v9.2.17 — sekarang
-tinggal 2 sinyal, semuanya berbasis level.
+Sekarang hanya ada 4 sinyal, semuanya berbasis level.
 
-Ide dasarnya: R yang melonjak menandakan ada yang menyerap. Yang penting adalah
-R BESAR. Sejak v9.2.18 TIDAK ADA validasi apa pun: candle penyerapan dengan
-R besar LANGSUNG jadi garis level saat muncul — tidak menunggu R runtuh,
-tidak menunggu arah cumCVD, tidak peduli pergerakan harga, dan tidak bisa
-dibatalkan oleh penembusan. R besar = level.
+Ide dasarnya: R yang melonjak menandakan ada yang menyerap. Tapi penyerapan bisa
+BERHASIL atau GAGAL. Hanya penyerapan yang TERBUKTI berhasil yang melahirkan level.
+Level itu kemudian dipantau: saat harga kembali ke sana dengan R yang hanya normal,
+artinya penjaga level sudah tidak hadir lagi — tidak ada supply/demand tersisa di situ.
 
-DUA SINYAL
+EMPAT SINYAL
 ------------
 1. RESISTANCE TERBENTUK
    Candle penyerapan BUY: |R| ≥ 10× bar sebelumnya DAN |R| ≥ 50, R bertanda POSITIF
-   (net BUY diserap seller). LANGSUNG jadi garis level di candle itu — tanpa
-   menunggu pembuktian apa pun.
+   (net BUY diserap seller). Lalu TERBUKTI dalam ≤12 bar berikutnya:
+     - R runtuh ≤50% dari R candle penyerapan
+     - cumCVD turun
+     - harga turun ≥5% DIUKUR KE TITIK TERJAUH, bukan ke bar terakhir
+
+   Contoh: high 121,76K lalu turun sampai 49,54K (−59%). Yang membuktikan level
+   adalah titik 49,54K itu, meskipun setelahnya harga memantul naik lagi.
    GARIS LEVEL = HIGH candle penyerapan, dinyatakan dalam MARKET CAP.
    (rentang LOW–HIGH tetap ditampilkan sebagai konteks)
 
 2. SUPPORT TERBENTUK
-   Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), |R| ≥ 10× bar
-   sebelumnya DAN |R| ≥ 50. LANGSUNG jadi garis level di candle itu.
+   Kebalikannya: R bertanda NEGATIF (net SELL diserap buyer), lalu terbukti dengan
+   R runtuh, cumCVD naik, dan harga naik ≥5% ke titik terjauh.
    GARIS LEVEL = LOW candle penyerapan.
+
+3. RETEST RESISTANCE — KEMUNGKINAN BREAKOUT
+   Harga kembali menyentuh GARIS resistance (HIGH candle penyerapan), TETAPI:
+     - |R| hanya ≤1,2× median |R| klaster aktif (tidak ada perlawanan berarti)
+     - cumCVD NAIK
+   Artinya seller yang dulu menjaga level itu sudah tidak ada. No supply lagi di situ.
+
+4. RETEST SUPPORT — KEMUNGKINAN BREAKDOWN
+   Harga kembali menyentuh GARIS support (LOW candle penyerapan) dengan R normal
+   dan cumCVD TURUN. Buyer yang dulu menjaga sudah tidak hadir.
+
+RETEST = KEMBALI KE GARIS, BUKAN KE PITA
+----------------------------------------
+Retest diukur terhadap SATU GARIS:
+  resistance -> HIGH candle penyerapan
+  support    -> LOW  candle penyerapan
+Toleransi sentuhan 0,5% dari harga garis.
+
+Selain itu harga wajib PERGI dulu sebelum boleh dihitung "kembali": harus menjauh
+minimal 2% dari garis (LVL_EXIT_PCT) agar level menjadi "armed". Tanpa syarat ini,
+harga yang masih berkeliaran di sekitar level yang baru terbentuk akan salah
+terbaca sebagai retest. Setelah satu alert, level dikunci lagi sampai harga
+kembali menjauh — jadi tetap satu alert per kunjungan.
+
+PENYERAPAN GAGAL
+----------------
+Jika setelah penyerapan harga justru menembus level >2% ke arah yang berlawanan
+dengan penyerapan, itu dianggap GAGAL:
+  - tidak melahirkan level
+  - tidak muncul di daftar sinyal sama sekali
+Ini yang membedakan v9.2.0 dari versi lama: dulu spike R langsung jadi sinyal,
+sekarang wajib dibuktikan dulu oleh pergerakan harga sesudahnya.
 
 AMBANG (content.js)
 -------------------
   R_SPIKE_MULT      10     |R| minimal 10x bar sebelumnya
   R_MIN_ABS         50     lantai |R| — di bawah ini bukan penyerapan
   ABSORB_MIN_CVD    3 SOL  lantai effort agar R tidak artefak pembagian
-  (v9.2.17: LVL_MIN_MOVE_PCT, LVL_LINE_PAD_PCT, LVL_EXIT_PCT, LVL_RETEST_R_MAX
-   DIHAPUS bersama sinyal retest; v9.2.18: LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS,
-   LVL_R_DROP, LVL_FAIL_PCT DIHAPUS bersama seluruh validasi — lihat bagian bawah)
+  LVL_CONFIRM_BARS  12     jendela pembuktian
+  LVL_R_DROP        0.5    R sesudahnya harus ≤50%
+  LVL_MIN_MOVE_PCT  5      harga wajib bergerak ≥5% ke titik terjauh
+  LVL_FAIL_PCT      2      tembus >2% = penyerapan gagal
+  LVL_LINE_PAD_PCT  0.5    toleransi sentuhan garis saat retest
+  LVL_EXIT_PCT      2      harga wajib menjauh ≥2% dari garis sebelum retest
+  LVL_RETEST_R_MAX  1.5    retest valid bila |R| <1,5× acuan (= band normal R MONITOR)
 
 R MONITOR
 ---------
@@ -86,7 +131,7 @@ kondisi perlawanan per candle: BEBAS / NORMAL / SERAP / TEMBOK / SEPI.
 
 MARKET CAP
 ----------
-Level selalu dinyatakan dalam MARKET CAP, bukan price. Ekstensi
+Level dan retest selalu dinyatakan dalam MARKET CAP, bukan price. Ekstensi
 mengambil effective supply dari holder, lalu token_info, lalu inferensi.
 Jika belum tertangkap, detail menampilkan "MC belum tersedia".
 
@@ -151,11 +196,8 @@ Kasus nyata BABYSHIB, 20 Agustus 01:00 WIB:
   -> padahal harga nyata tertinggi bar itu $121,76K (0,53 SOL)
   -> garis resistance meleset 106%; retest jam 19:00 tidak terdeteksi
 
-Sekarang HIGH/LOW hanya dihitung dari trade >= 0,001 SOL. OPEN dan CLOSE
-waktu itu tetap memakai SELURUH trade — hanya penentuan wick yang disaring.
-(DI PERBAIKI DI v9.2.19: open/close kini ikut disaring oleh aturan yang
-sama, karena trade debu di ujung bar ternyata bisa memalsukan chg_pct dan R;
-lihat bagian paling atas.) CVD dan R tetap memakai seluruh trade.
+Sekarang HIGH/LOW hanya dihitung dari trade >= 0,001 SOL. OPEN, CLOSE, CVD
+dan R tetap memakai SELURUH trade — hanya penentuan wick yang disaring.
 Kalau semua trade dalam satu bar berukuran debu, bar itu memakai seluruh
 trade (fallback) agar tidak ada bar tanpa harga.
 
@@ -428,251 +470,3 @@ PERBAIKAN
     konstanta, jadi jumlahnya langsung terbaca tanpa dihitung manual.
 
 Nilai tetap 12 — ini murni pemberian nama & label, bukan perubahan perilaku.
-
-
-================================================================
-CHART BISA DIGESER HORIZONTAL  (v9.2.14)
-================================================================
-(Catatan: perubahan ini sudah tercatat di DECISIONS.md 2026-08-25 dan PR #5,
-tetapi entri changelog README-nya terlewat — di-backfill singat di sini.)
-
-SVG chart (R MONITOR & lintasan harga/CVD) tidak lagi dipaksa menyempit ke
-lebar widget. Ia tetap pada lebar aslinya (min-width 1000px) dan dibungkus
-.gmgn-chart-wrap yang bisa di-scroll horizontal:
-  - drag dengan mouse / swipe native di layar sentuh,
-  - tombol ‹ › (muncul otomatis hanya saat ada ruang terpotong),
-  - scroll wheel / trackpad horizontal.
-Re-wire otomatis tiap render ulang (updateUI tiap 3 detik) lewat
-MutationObserver. Saat widget lebih lebar dari 1000px chart tetap mengisi
-penuh — perilaku lama tidak berubah di layar besar.
-
-
-================================================================
-PENANDA LEVEL RAPUH (WHALE TUNGGAL) — KONSENTRASI ORDER  (v9.2.15)
-================================================================
-MASALAH
-Backtest manual menemukan pola yang BERLAWANAN dengan asumsi mesin: level
-RESISTANCE/SUPPORT TERBENTUK yang lahir dari absorpsi RAKSASA (|R| sangat
-ekstrem, >= R_BAND_BLAZE / 12x acuan) justru lebih sering BREAKOUT/BREAKDOWN
-saat di-retest, bukan bertahan sebagai level kuat.
-
-HIPOTESIS
-R ekstrem sering berasal dari SATU wallet (order tunggal besar) yang menyerap
-habis dalam satu candle. Begitu wallet itu selesai, tidak ada "penjaga" lain
-di level itu — beda dengan absorpsi terdistribusi dari banyak trade
-independen yang menciptakan defense berlapis.
-
-PERBAIKAN — KONSENTRASI ORDER
-Di titik yang sama dengan perhitungan max_trade_sol per bar, kini juga
-dihitung:
-  concentration_ratio = max_trade_sol / vol_sol
-yaitu porsi volume bar yang datang dari wallet terbesar. Disimpan sebagai
-field per bar dan menjadi kolom baru di bagian BARS file export, tepat
-setelah max_trade_sol.
-
-PERBAIKAN — PENANDA RAPUH SAAT LEVEL LAHIR
-Saat sinyal RESISTANCE/SUPPORT TERBENTUK dihasilkan, objek level diberi flag:
-  level.fragile = penyerapan kelas RAKSASA (isAbsorbGrade DAN >= 12x acuan)
-                  DAN concentration_ratio >= CONCENTRATION_FRAGILE_THRESHOLD
-INI METADATA, BUKAN FILTER. R_MIN_ABS, R_SPIKE_MULT, LVL_CONFIRM_BARS,
-LVL_R_DROP, LVL_MIN_MOVE_PCT, LVL_FAIL_PCT, LVL_EXIT_PCT, LVL_RETEST_R_MAX,
-R_BAND_WALL, R_BAND_BLAZE — semua threshold deteksi level TETAP SAMA. Level
-tetap lahir, tetap tampil normal di daftar sinyal; yang bertambah hanya
-label dan informasi:
-  - judul sinyal  : "RESISTANCE TERBENTUK (RAPUH — whale tunggal)"
-  - narasi level  : ditambah satu kalimat — "Penyerapan ini didominasi satu
-                    wallet (X% dari volume bar) — level ini historisnya
-                    lebih sering tembus daripada bertahan saat di-retest."
-  - narasi retest : untuk level fragile, framing breakout/breakdown
-                    ditegaskan — "Level ini dari awal sudah ditandai RAPUH
-                    (whale tunggal), jadi probabilitas tembus di retest ini
-                    secara historis lebih tinggi dari retest level biasa."
-                    Tidak ada logika baru yang memicu retest.
-  - warna aksen   : reuse skema TEMBOK biasa vs RAKSASA yang sudah ada
-                    (seller #ff3355 / buyer #00ff5e untuk level rapuh) —
-                    tidak ada skema warna baru.
-  - panel status retest: level rapuh diberi label "RAPUH — whale tunggal".
-
-CONCENTRATION_FRAGILE_THRESHOLD = 0.6
-Ditaruh di kelompok konstanta yang sama dengan R_BAND_BLAZE. Angka 0,6
-adalah nilai AWAL dari backtest manual pertama — PERLU DIKALIBRASI LAGI
-setelah backtest dengan lebih banyak data (pakai kolom export di bawah).
-
-EXPORT
-Bagian LEVEL & SINYAL kini memuat kolom fragile (TRUE/FALSE) dan
-concentration_ratio_at_formation untuk tiap level; baris retest membawa
-flag level asalnya. STATUS RETEST juga menampilkan fragile per level.
-Dengan ini backtest lanjutan bisa menilai hipotesis whale-tunggal tanpa
-membuka raw trades lagi.
-
-MODE LIVE: FETCH AWAL 4 HARI, R MONITOR 24 JAM TERAKHIR
-Fetch awal LIVE naik dari 48 jam menjadi 4 HARI (LIVE_FETCH_SEC) supaya
-mesin level punya ruang pembuktian (12 bar sesudah penyerapan) untuk
-penyerapan yang terjadi 2-3 hari lalu. Sinkron tiap 15 menit tetap
-inkremental dari trade terakhir. Tampilan R MONITOR justru dipersempit:
-hanya 24 JAM TERAKHIR yang digambar (R_MON_WINDOW_SEC), pada TF berapa pun
-(1H -> 24 candle, 4H -> 6). Acuan median TETAP dihitung dari seluruh
-klaster aktif, supaya r_ratio/r_state yang tampil di layar identik dengan
-file export.
-
-REGRESI
-Suite tes lama (9 tes era v9.2.11 + 8 tes era v9.2.12) ternyata belum
-pernah ikut ter-commit ke repo; kini DIREKONSTRUKSI dari deskripsi README
-dan dijadikan file resmi tests/regression.js (jalankan: node
-tests/regression.js). Ditambah 6 tes baru: hitung concentration_ratio
-(dominan vs merata), fragile=true (RAKSASA + konsentrasi tinggi),
-fragile=false (RAKSASA tapi terdistribusi), fragile=false (bukan RAKSASA
-meski konsentrasi tinggi), kolom export, dan regresi konstanta. Regresi
-23 tes (17 lama + 6 baru): LULUS semua.
-
-================================================================
-FETCH N HARI BERHENTI DI 1 HARI (v9.2.16)
-================================================================
-MASALAH
-Fetch untuk rentang N hari (Background Fetch, dengan range diset dari
-filter halaman GMGN — misal 7 hari, 14 hari) hanya berhasil mengambil
-data sampai 1 hari ke belakang, lalu berhenti dengan status "DONE".
-Data hari-hari sebelumnya tidak pernah ke-fetch, padahal endpoint
-sumber (GMGN token_trades — bar/candle di ekstensi ini dibangun dari
-raw trade ini, bukan endpoint OHLCV) punya data lebih jauh ke belakang.
-
-AKAR MASALAH
-Dua kesalahan di backgroundFetch() (v9.2.15):
-  1. API GMGN memotong `from` yang jauh di masa lalu: request
-     `from=7 hari lalu&to=now` hanya mengembalikan ~1 hari terakhir.
-     (Faktanya sudah diketahui — komentar lama di mode LIVE: "from jauh
-     di belakang sering dipotong API" — dan LIVE memang punya
-     workaround, TAPI backgroundFetch tidak memakainya.) backgroundFetch
-     lama mengirim SATU from/to lalu percaya satu rantai cursor: rantai
-     hanya berjalan ~1 hari, `next` habis, kode menganggap selesai.
-  2. Cache incremental mengganti `startTs` dengan `lastCachedTs + 1`,
-     sehingga "fetch 7 hari" dengan cache 1 hari (dari fetch/LIVE
-     sebelumnya) cuma mengambil trade SEBELUM trade terakhir cache —
-     sisa rentang tidak pernah di-fetch; yang tampil hanya isi cache.
-
-PERBAIKAN
-- Mekanisme fetch ditulis ulang menjadi WALK bertahap (walkTradeRange):
-  rentang dijalani mundur dari `to` dalam rantai-rantai cursor.
-  Rantai baru SELALU dimulai dari titik terlama yang sudah dicapai
-  (to = oldest - 1) dan cursor selalu diupdate dari respons
-  sebelumnya — jadi tidak ada "request berikutnya memakai timestamp
-  yang sama". Rantai yang terpotong (batas 200 halaman, atau `next`
-  habis di tengah) langsung diganti rantai baru — tidak ada break
-  prematur. Kalau sebuah potongan tidak mengandung trade (data hening /
-  gap), boundary mundur WALK_PROBE_STEP_SEC (12 jam) — sengaja lebih
-  pendek dari jendela tersirat API (~1 hari) supaya potongan saling
-  tumpang-tindih dan tidak ada trade yang terlewat.
-- Cache tidak lagi memangkas rentang yang diminta: cache tetap di-seed
-  (UI langsung terisi, dedup tx_hash menampung overlap), tapi fetch
-  SELALU menjalankan seluruh rentang [startTs, endTs].
-- Log progress per halaman di console, contoh:
-    [SMART SEROK] fetch 7 hari: halaman 12 · +200 trade · tersimpan 2.340 TX
-      · terlama 20 Agustus 03:00 · rantai baru #3
-  plus status di widget "FETCH hari 3/7 · 2.340 TX" — jadi kalau suatu
-  saat fetch berhenti prematur lagi, langsung kelihatan di mana.
-- Kalau API memang tidak punya data selama (token baru listing / limit
-  provider), fetch tetap mengambil SEMUA yang tersedia dan memberi tahu
-  JERNIH berapa hari yang benar-benar didapat vs diminta: status "⚠
-  2.0/7 hari · data terlama 24 Agustus" + alert + console.warn — tidak
-  lagi berhenti diam-diam dengan status DONE.
-- Rentang tanpa filter (user belum set range di halaman GMGN) memakai
-  DEFAULT_RANGE_DAYS = 7 hari, bukan from-kosong tanpa batas.
-- LIVE mode memakai walk yang sama, sehingga jendela 4 hari
-  (LIVE_FETCH_SEC) benar-benar tertutup penuh untuk token ramai, bukan
-  cuma 200+80 halaman pertama.
-
-TIDAK DIUBAH
-Semua ambang deteksi sinyal (R_MIN_ABS, R_SPIKE_MULT, ABSORB_MIN_CVD,
-LVL_*, R_BAND_*, CONCENTRATION_FRAGILE_THRESHOLD) — ini murni perbaikan
-mekanisme fetch data. Tidak ada clustering/pengelompokan hari.
-
-REGRESI
-+11 tes baru untuk walkTradeRange dengan fake API yang meniru perilaku
-pemotongan GMGN (tes ke-24 mereproduksi bug lama: logika v9.2.15 hanya
-dapat 500 dari 3500 trade). Mencakup: token ramai 7 hari (3.500 trade,
-multi-rantai), token sepi 3 hari, gap 2 hari di tengah data, token baru
-listing (laporan parsial 2/7 hari), cursor macet, batas halaman rantai,
-batas halaman global, shouldStop, error jaringan, dan normalisasi
-timestamp. Total 34 tes: LULUS semua.
-
-================================================================
-SINYAL RETEST DIHAPUS + SYARAT GERAK HARGA ≥5% DIHAPUS (v9.2.17)
-================================================================
-MASALAH
-Dua penyederhanaan yang diminta pengguna:
-  1. Sinyal RETEST RESISTANCE / RETEST SUPPORT dianggap tidak perlu lagi.
-     Level cukup lahir sekali; pantauan "harga kembali ke garis dengan R
-     normal" (arm/exit/diagnosa/panel STATUS RETEST) menambah kompleksitas
-     tanpa menambah keputusan yang ditindaklanjuti.
-  2. Validasi level menuntut harga bergerak ≥5% (LVL_MIN_MOVE_PCT) ke titik
-     terjauh sebagai BUKTI. Padahal esensi penyerapan adalah R BESAR —
-     penyerapan dengan R besar yang terbukti (R runtuh + cumCVD searah)
-     sudah cukup sah menjadi level, berapa pun besarnya pergerakan harga.
-
-PERBAIKAN
-- Sinyal RETEST RESISTANCE / RETEST SUPPORT DIHAPUS total. Sekarang hanya
-  2 sinyal: RESISTANCE TERBENTUK dan SUPPORT TERBENTUK. Semua mekanisme
-  retest ikut dihapus: konstanta LVL_LINE_PAD_PCT, LVL_EXIT_PCT,
-  LVL_RETEST_MIN_GAP, LVL_RETEST_R_MAX; SIG_RETEST_RES/SIG_RETEST_SUP;
-  fungsi makeRetestEvent, levelLine, touchesLine, retestDiagText; arming
-  (lv.armed/pendingArm) di scanSignals; panel "STATUS PEMANTAUAN RETEST";
-  section "=== STATUS RETEST ===" di export; wajik retest di chart
-  lintasan; entri SIG_META; dan penjelasan retest di catatan UI.
-- Syarat LVL_MIN_MOVE_PCT (harga wajib bergerak ≥5%) DIHAPUS dari
-  verifyAbsorption. Level sekarang TERBUKTI hanya oleh dua hal:
-    a. R runtuh ≤50% dari R candle penyerapan, dan
-    b. cumCVD bergerak ke arah yang benar (resistance: turun; support:
-       naik) — diukur ke TITIK TERJAUH, bukan ke bar terakhir.
-  Pergerakan harga tetap DICATAT (movePct masuk narasi + export sebagai
-  info), bukan lagi syarat lolos.
-- Penembusan >LVL_FAIL_PCT (2%) SEBELUM terbukti tetap = GAGAL, tidak
-  jadi level. Bukti tetap dinilai MAJU bar per bar (sekali terbukti tidak
-  bisa dibatalkan).
-
-TIDAK DIUBAH
-Semua ambang deteksi penyerapan (R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD),
-jendela pembuktian (LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS, LVL_R_DROP),
-LVL_FAIL_PCT, seluruh R MONITOR, penanda RAPUH (v9.2.15), dan mekanisme
-fetch walk (v9.2.16).
-
-REGRESI
-3 tes baru: (35) RETEST tidak ada lagi — konstanta/helper retest tidak
-di-export lagi dan bar yang dulu memicu retest kini diam; (36) level
-CONFIRMED walau harga hanya bergerak <5% (R runtuh + cumCVD turun);
-(37) arah cumCVD tetap syarat — R runtuh tapi cumCVD naik tidak
-confirmed. Total 37 tes: LULUS semua.
-
-================================================================
-VALIDASI LEVEL DIHAPUS TOTAL — LEVEL INSTAN (v9.2.18)
-================================================================
-MASALAH
-Prinsip "yang penting adalah R besar" (v9.2.17) masih menyisakan
-mesin validasi: level baru lahir setelah ≤12 bar pembuktian (R runtuh
-≤50% + arah cumCVD) dan bisa dibatalkan kalau harga menembus >2%
-sebelum terbukti. Mesin itu menambah latensi & kerumitan padahal
-yang ditindaklanjuti pengguna justru candle R BESAR-nya itu sendiri.
-
-PERBAIKAN
-- SELURUH validasi level DIHAPUS. Candle penyerapan (|R| ≥10× bar
-  sebelumnya DAN |R| ≥50, effort ≥3 SOL) LANGSUNG jadi garis level di
-  bar yang sama — tidak menunggu apa pun, tidak bisa "gagal".
-- Konstanta dihapus: LVL_CONFIRM_BARS, LVL_MIN_CONFIRM_BARS,
-  LVL_R_DROP, LVL_FAIL_PCT.
-- Fungsi verifyAbsorption() dihapus total (bersama status
-  confirmed/pending/failed dan pengukuran titik terjauh).
-- scanSignals disederhanakan: kandidat penyerapan -> langsung level.
-- Narasi/UI/export/chart disesuaikan: tidak ada lagi kalimat
-  "terbukti", "pembuktian", "penyerapan gagal"; label chart R MONITOR
-  kini "sinyal -> LANGSUNG jadi level (v9.2.18)".
-
-TIDAK DIUBAH
-Ambang deteksi penyerapan (R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD),
-penanda RAPUH (v9.2.15), fetch walk (v9.2.16), R MONITOR, dan seluruh
-mekanisme non-level.
-
-REGRESI
-Tes 07/08 (verifyAbsorption) dan 36/37 lama DIHAPUS; diganti: (36)
-level INSTAN — lahir di bar penyerapan walau tidak ada bar sesudahnya;
-(37) level TIDAK dibatalkan penembusan harga; (38) tanpa R besar
-tidak ada level. Tes 35 diperluas (konstanta validasi tidak di-export).
-Total 36 tes: LULUS semua.

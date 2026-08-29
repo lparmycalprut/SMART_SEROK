@@ -138,7 +138,7 @@ def handle_upload(filename, blob):
 # ── Sisi DOWNLOAD ────────────────────────────────────────────────────────────
 # File yang membentuk ekstensi siap-pasang. ZIP dibangun on-demand dari isi
 # repo terkini, jadi tidak pernah basi.
-EXT_FILES = ["manifest.json", "content.js", "README.txt",
+EXT_FILES = ["manifest.json", "bridge.js", "content.js", "README.txt",
              "icon16.png", "icon48.png", "icon128.png"]
 
 

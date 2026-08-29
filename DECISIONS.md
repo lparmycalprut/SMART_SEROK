@@ -378,3 +378,63 @@ tampilan -0,04% pada data lama):
 **Tes:** +2 tes — 41 (API yang MENOLAK from jauh tetap menutup 4 hari, jadi walk
 tidak lagi gagal di halaman 0) dan 42 (helper URL fallback limit/event).
 Suite regresi kini 40 tes dan LULUS semua.
+
+
+## 2026-08-29 — Rollback v9.3.0 dari v9.2.14 + GMGN Agent API + AKD ENGINE
+
+**Rollback dulu.** User meng-upload ZIP "versi yang work" lewat portal
+(`_incoming/20260829-125746__SMART_SEROK/`, isi = **v9.2.14**: LEVEL ENGINE
+4 sinyal, export satu tombol, chart scroll horizontal). Aturan lama berlaku:
+file versi kerja dari user MENANG atas isi repo. Repo v9.2.20 (pencarian work
+LIVE 0 TX) ditinggalkan; pekerjaan baru dibangun di ATAS v9.2.14.
+
+### GMGN Agent API (OpenAPI) — v9.3.0
+
+- Sumber protokol: `github.com/GMGNAI/gmgn-skills` (`src/client/OpenApiClient.ts`,
+  `src/config.ts`). Host `https://openapi.gmgn.ai`. Endpoint DATA (token/market/
+  user-read) pakai auth "exist": header `X-APIKEY: <key>` + query
+  `timestamp` (detik, toleransi ±5s) & `client_id` (UUID). Swap/order butuh
+  tanda tangan Ed25519/RSA dengan PRIVATE KEY — **tidak dipakai** (read-only).
+- **Key bawaan tertanam** (`gmgn_cae4…c925`) di `bridge.js`; dipakai otomatis.
+  Kolom input di panel + tombol Simpan → key kustom disimpan di
+  `chrome.storage.local` (autosave, tidak perlu isi ulang); tombol "Default"
+  kembali ke key bawaan.
+- **Arsitektur dua world.** `content.js` tetap MAIN world (harus hook fetch/XHR
+  halaman). MAIN world tak bisa CORS ke openapi.gmgn.ai, maka `bridge.js`
+  berjalan sebagai content script KEDUA di ISOLATED world + host_permissions
+  `https://openapi.gmgn.ai/*` → fetch lintas-origin diizinkan browser. Komunikasi
+  MAIN→ISOLATED lewat `window.postMessage` dengan tag `SMART_SEROK_*`.
+- Fitur: (a) **Smart Tags** — `/v1/user/smartmoney` + `/v1/user/kol` (limit 200,
+  chain sol), registry wallet disimpan di `walletTagRegistry` → tag
+  `smart_money`/`kol` menempel di trade yang sudah ter-capture; cache 6 jam di
+  storage. (b) **Token API** — `/v1/token/info` + `/v1/token/security`
+  dirangkum di kartu (honeypot/renounce/mint/LP burn/sniper/bundle/top10/pajak).
+- Auto: status key di-refresh 0,8 dtk setelah boot; smart tags ditarik 2,5 dtk.
+
+### AKD ENGINE — akumulasi & distribusi senyap dari CVD
+
+Mesin BARU, terpisah dari LEVEL ENGINE (LEVEL ENGINE = 1 candle penyerapan
+raksasa yang TERBUKTI; AKD = pola aktivitas senyap lintas 6–18 candle).
+Jendela jalan 6–18 bar, ambang dinormalisasi ke median |cvd_clean| (otomatis
+menyesuaikan likuiditas token, sama seperti R MONITOR). Enam sinyal:
+
+1. `AKUMULASI — ABSORPSI JUAL DI SUPPORT`: CVD window turun tajam
+   (|net| ≥ 0,9× upaya normal) tapi harga tertahan (|chg| <3% / malah lower-low
+   tipis): jual market ritel diserap beli pasif whale. Penguat: window menempel
+   garis support LEVEL ENGINE (+8 skor).
+2. `AKUMULASI — BELI BERTAHAP SAAT FLAT`: rentang high-low ≤4% & |chg| ≤2%,
+   ≥55% bar net beli, CVD merangkak konsisten.
+3. `BULLISH DIVERGENCE`: dua swing dalam window — harga lower-low kedua (≥0,8%)
+   tapi delta CVD PER SEGMEN membaik (tekanan jual menyusut). Penting: yang
+   dibandingkan delta segmen, BUKAN CVD absolut (saat lower-low CVD absolut
+   masih turun; versi pertama yang membandingkan cum absolut tidak pernah
+   menyala).
+4–6. Cermin distribusi: absorpsi beli di resistance (whale distribusi pasif ke
+   ritel FOMO), jual bertahap saat flat, bearish divergence.
+
+Sinyal AKD **tidak kedaluwarsa** (fase akumulasi bisa berhari-hari; satu sinyal
+per pola per episode dengan latch 18 bar). Skor 30–96 → grade A+/A/B+/B.
+OI (Open Interest) disebut di narasi sebagai konfirmasi tambahan KHUSUS futures
+— spot meme on-chain tidak punya OI. Tes: `tests/akd_smoke.js`, 20 assertions,
+LULUS semua (3 pola beli + 2 pola divergence + negatif tren sehat + data pendek
++ wash). File hasil: manifest.json, bridge.js, content.js, README.txt, icons.

@@ -1,14 +1,28 @@
 {
   "manifest_version": 3,
   "name": "SMART SEROK",
-  "version": "9.2.20",
-  "description": "SMART SEROK v9.2.20 — LIVE tidak lagi gagal 0 TX: dari per request dibatasi 1 hari di depan to, fallback limit 200->100->50 dan tanpa event, penyebab gagal tampil di status; LEVEL INSTAN; OPEN/CLOSE bebas trade debu; fetch rentang N hari penuh; R MONITOR 24 jam.",
+  "version": "9.3.0",
+  "description": "SMART SEROK v9.3.0 — GMGN Agent API (key tertanam + autosave lokal), feed smart-money/KOL, dan deteksi AKUMULASI/DISTRIBUSI dari CVD: absorpsi di support/resistance, divergensi CVD vs harga, dan akumulasi/distribusi bertahap saat harga flat.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
     "128": "icon128.png"
   },
+  "host_permissions": [
+    "https://openapi.gmgn.ai/*"
+  ],
   "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
     {
       "matches": [
         "https://gmgn.ai/*",
