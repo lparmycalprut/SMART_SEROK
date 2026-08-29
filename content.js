@@ -1,5 +1,5 @@
 /**
- * SMART SEROK — v9.2.19
+ * SMART SEROK — v9.2.20
  * --------------------------------------------------------------
  * LEVEL ENGINE — hanya 2 sinyal (RETEST dihapus di v9.2.17).
  *
@@ -37,6 +37,15 @@
  * 23:00: harga asli +3% tapi satu sell debu 0,0000 SOL di akhir bar
  * membuat chg_pct terbaca -0,04% dan R meledak menjadi TEMBOK.
  * open_raw/close_raw ditambahkan ke export untuk forensik.
+ *
+ * v9.2.20: LIVE tidak lagi langsung "❌ gagal · +0 TX". Dua penyebab:
+ *  1. walkTradeRange mengirim from=startTs (4 hari lalu) ke setiap
+ *     request. API GMGN memotong/menolak from yang jauh di belakang `to`
+ *     (kasus LIVE 0 TX). Sekarang `from` per request dibatasi 1 hari di
+ *     depan `to`; loop tetap menutup rentang penuh.
+ *  2. gmgnRequest menolak bila response code != 0 tanpa mencoba format
+ *     lain. Sekarang ada fallback: limit 200 -> 100 -> 50, lalu tanpa
+ *     filter `event`. Penyebab kegagalan ditampilkan di status LIVE.
  */
 
 (function () {
@@ -52,6 +61,7 @@
   let isResetting = false, bgFetchActive = false, bgFetchComplete = false;
   let bypassRangeFilter = false;
   let liveMode = false, liveTimer = null, liveBusy = false, liveNextAt = 0;
+  let lastRequestError = "";              // diagnostik LIVE/Background Fetch
   let cachedMcUsd = 0, cachedSupply = 0, cachedPriceUsd = 0, cachedMcPerPrice = 0;
   let cachedHolderSupply = 0;
   let cachedTokenSymbol = "";     // simbol token untuk penamaan file export
@@ -61,7 +71,7 @@
     noMaker: 0, badEvent: 0, badTs: 0, lastMsg: "IDLE", lastTs: 0 };
 
   // ── Engine constants ─────────────────────────────────────────────────────
-const EXT_VER = "9.2.19";             // dipakai di header file export
+const EXT_VER = "9.2.20";             // dipakai di header file export
   let BAR_SEC = 3600;                   // diisi dari TF aktif GMGN
   const WASH_WINDOW_SEC = 60;
   const NOISE_TAGS = ["sandwich_bot", "mev_bot", "mev"];
@@ -579,30 +589,57 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
     return ts;
   }
 
-  // Satu GET ke API GMGN dengan retry (diambil dari blok inline lama, dipisah
-  // supaya mekanismenya bisa dites tanpa browser). Return json bila code===0,
-  // null setelah semua percobaan gagal (TIDAK pernah menelan error diam-diam:
-  // tiap kegagalan tercatat di console).
+  // Variant URL untuk fallback. API GMGN kadang menolak `limit=200` atau
+  // pasangan `event=buy&event=sell`; kalau default gagal, coba limit lebih
+  // kecil lalu tanpa filter event. Semua masuk dashboard "LIVE ❌ gagal" agar
+  // penyebabnya terlihat tanpa buka console.
+  function reqUrlWithLimit(u, n) {
+    try { const x = new URL(u, window.location.origin); x.searchParams.set("limit", String(n)); return x.toString(); }
+    catch (e) { return u.replace(/limit=\d+/, "limit=" + n); }
+  }
+  function reqUrlNoEvent(u) {
+    try { const x = new URL(u, window.location.origin); x.searchParams.delete("event"); return x.toString(); }
+    catch (e) { return u.replace(/event=[^&]+&?/g, ""); }
+  }
+
+  // Satu GET ke API GMGN dengan retry (+ fallback format URL). Diambil dari
+  // blok inline lama, dipisah supaya mekanismenya bisa dites tanpa browser.
+  // Return json bila code===0, null setelah semua variant gagal (TIDAK pernah
+  // menelan error diam-diam: tiap kegagalan tercatat di console).
   async function gmgnRequest(url, delayMs) {
     let lastErr = "";
-    for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        if (attempt === 0) console.log("[SMART SEROK] GET", url);
-        const resp = await originalFetch.apply(window, [url, { credentials: "include" }]);
-        const txt = await resp.text();
-        let json = null;
-        try { json = JSON.parse(txt); } catch (pe) { json = null; }
-        if (json && json.code === 0) return json;
-        lastErr = json ? `code=${json.code} (${json.reason || json.msg || "?"})` : `HTTP ${resp.status}`;
-      } catch (e) {
-        lastErr = "ERR " + (e && e.message ? e.message : e);
-      }
-      if (attempt < 3) {
-        console.warn(`[SMART SEROK] retry ${attempt + 1}/3: ${lastErr}`);
-        await new Promise(r => setTimeout(r, (delayMs || 800) * (attempt + 2)));
+    const noEvent = reqUrlNoEvent(url);
+    const variants = [
+      { label: "default", url },
+      { label: "limit=100", url: reqUrlWithLimit(url, 100) },
+      { label: "limit=50", url: reqUrlWithLimit(url, 50) },
+      { label: "tanpa_event+limit=50", url: reqUrlWithLimit(noEvent, 50) }
+    ];
+    const seen = new Set();
+    for (const v of variants) {
+      if (seen.has(v.url)) continue;
+      seen.add(v.url);
+      const retries = v.label === "default" ? 3 : 1;   // default: retry jaringan; fallback: 1x saja
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          if (attempt === 0) console.log(`[SMART SEROK] GET [${v.label}]`, v.url);
+          const resp = await originalFetch.apply(window, [v.url, { credentials: "include" }]);
+          const txt = await resp.text();
+          let json = null;
+          try { json = JSON.parse(txt); } catch (pe) { json = null; }
+          if (json && json.code === 0) { lastRequestError = ""; return json; }
+          lastErr = json ? `code=${json.code} (${json.reason || json.msg || "?"})` : `HTTP ${resp.status}`;
+          console.warn(`[SMART SEROK] ${v.label} gagal: ${lastErr} — coba variant berikutnya`);
+          break;  // code != 0 tidak akan sembuh dengan retry variant yang sama
+        } catch (e) {
+          lastErr = "ERR " + (e && e.message ? e.message : e);
+          console.warn(`[SMART SEROK] retry ${attempt + 1}/${retries} (${v.label}): ${lastErr}`);
+          if (attempt < retries - 1) await new Promise(r => setTimeout(r, (delayMs || 800) * (attempt + 2)));
+        }
       }
     }
-    console.error(`[SMART SEROK] request gagal setelah 4 percobaan: ${lastErr} | ${url}`);
+    lastRequestError = lastErr;
+    console.error(`[SMART SEROK] request gagal setelah ${variants.length} variant: ${lastErr} | ${url}`);
     return null;
   }
 
@@ -649,7 +686,13 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
       if (pages >= maxPages) { capped = true; break; }
 
       // ── satu halaman (satu request; cursor dari respons sebelumnya) ──
-      let url = `${opts.baseUrl}&from=${startTs}&to=${coveredTo}`;
+      // JANGAN kirim from=startTs yang jauh di belakang `to`. API GMGN
+      // memotong from terlalu tua dan (v9.2.20, live 0 TX) kadang
+      // menolak request dengan code != 0. Kirim from paling jauh satu hari
+      // di depan `to`; loop yang memundurkan coveredTo tetap menutup rentang
+      // penuh karena setiap rantai berjalan dalam jendela <= API_FROM_WINDOW_SEC.
+      const reqFrom = Math.max(startTs, coveredTo - API_FROM_WINDOW_SEC);
+      let url = `${opts.baseUrl}&from=${reqFrom}&to=${coveredTo}`;
       if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
       const json = await opts.request(url);
       if (!json) { failed = true; break; }
@@ -820,6 +863,7 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
   const FETCH_CHAIN_PAGES = 200;         // batas halaman per rantai cursor (200 x 200 tx = 40k tx)
   const FETCH_MAX_PAGES = 1000;          // pengaman global lintas semua rantai
   const WALK_PROBE_STEP_SEC = 12 * 3600; // mundur boundary saat potongan kosong (wajib < ~1 hari)
+  const API_FROM_WINDOW_SEC = 24 * 3600; // jendela `from` per request — API memotong/menolak from yang jauh di belakang `to`
   const DEFAULT_RANGE_DAYS = 7;          // rentang saat user belum set filter di halaman GMGN
   function maxTradeTs() { let m = 0; for (const t of capturedTrades.values()) if (t.ts > m) m = t.ts; return m; }
   function paintLiveBtn() {
@@ -896,8 +940,14 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
         liveNextAt = Date.now() + LIVE_EVERY_MS;
         if (st) {
           const nxt = new Date(liveNextAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false });
-          st.innerText = r.failed ? `LIVE ❌ gagal · +${added} TX · next ${nxt}` : `LIVE · +${added} TX · next ${nxt}`;
-          st.style.color = r.failed ? "#ef4444" : "#10b981";
+          if (r.failed) {
+            const why = lastRequestError ? (lastRequestError.length > 44 ? lastRequestError.slice(0, 44) + "…" : lastRequestError) : "gagal";
+            st.innerText = `LIVE ❌ ${why} · +${added} TX · next ${nxt}`;
+            st.style.color = "#ef4444";
+          } else {
+            st.innerText = `LIVE · +${added} TX · next ${nxt}`;
+            st.style.color = "#10b981";
+          }
         }
         if (!r.covered && r.rangeWalked && r.oldest !== Infinity) {
           console.warn(`[SMART SEROK] LIVE: data API hanya sampai ${wibIso(r.oldest)} — jendela ${LIVE_FETCH_SEC / 86400} hari tidak tertutup penuh (token baru listing?).`);
@@ -2248,7 +2298,7 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
     </style>
     <div class="gmgn-card">
       <div class="gmgn-hdr">
-        <span class="t">🥄 SMART SEROK v9.2.18</span>
+        <span class="t">🥄 SMART SEROK v9.2.20</span>
         <span id="gmgn-tf-badge">1H · LEVEL ENGINE</span>
         <span id="gmgn-done-flag" style="display:none;">✅ DONE</span>
         <span class="gmgn-badge" id="gmgn-mc-badge">MC memuat…</span>
@@ -2346,6 +2396,9 @@ const EXT_VER = "9.2.19";             // dipakai di header file export
       wallColor, wallTextColor, wallGlow,
       // fetch walk (v9.2.16) — inti fetch N hari, dites dengan fake API
       walkTradeRange, tradeTsOf,
+      // v9.2.20 — LIVE tidak gagal 0 TX: helper URL + request fallback
+      gmgnRequest, reqUrlWithLimit, reqUrlNoEvent, API_FROM_WINDOW_SEC,
+      getLastRequestError: () => lastRequestError,
       // konstanta yang dijaga regresinya
       R_SPIKE_MULT, R_MIN_ABS, ABSORB_MIN_CVD, R_BAND_FREE,
       R_BAND_ABSORB, R_BAND_WALL, R_BAND_BLAZE, HL_MIN_SOL,
